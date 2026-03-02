@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "set"
+
 module EarlScribe
   module Audio
     # FFmpeg subprocess for live audio capture
@@ -39,6 +41,17 @@ module EarlScribe
         stop
       end
 
+      def start_chunked(output_dir, chunk_seconds: 10, &block)
+        cmd = chunked_command(output_dir, chunk_seconds: chunk_seconds)
+        # nosemgrep: ruby.lang.security.dangerous-exec.dangerous-exec
+        @process = IO.popen(cmd, err: File::NULL)
+        @yielded = Set.new
+        poll_for_chunks(output_dir, &block)
+      ensure
+        stop
+        yield_final_chunk(output_dir, &block)
+      end
+
       def stop
         return unless @process
 
@@ -57,6 +70,32 @@ module EarlScribe
           break if data.empty?
 
           yield data
+        end
+      end
+
+      def poll_for_chunks(output_dir, &block)
+        loop do
+          yield_completed_chunks(output_dir, &block)
+          sleep 0.5
+        end
+      end
+
+      def yield_completed_chunks(output_dir)
+        wavs = Dir.glob(File.join(output_dir, "*.wav")).sort
+        wavs[0...-1].each do |path|
+          next if @yielded.include?(path)
+          next unless File.size?(path)
+
+          @yielded.add(path)
+          yield path
+        end
+      end
+
+      def yield_final_chunk(output_dir)
+        Dir.glob(File.join(output_dir, "*.wav")).sort.each do |path|
+          next if @yielded&.include?(path)
+
+          yield path if File.size?(path)
         end
       end
     end

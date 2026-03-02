@@ -59,5 +59,26 @@ module EarlScribe
     ensure
       ENV.delete("AUDIO_CHUNK_SECONDS")
     end
+
+    test "deepgram_mip_opt_out? returns false by default" do
+      ENV.delete("DEEPGRAM_MIP_OPT_OUT")
+      assert_not EarlScribe::Config.deepgram_mip_opt_out?
+    end
+
+    test "deepgram_mip_opt_out? accepts 1, true, yes case-insensitively" do
+      %w[1 true TRUE yes Yes].each do |val|
+        ENV["DEEPGRAM_MIP_OPT_OUT"] = val
+        assert EarlScribe::Config.deepgram_mip_opt_out?, "Expected true for #{val.inspect}"
+      end
+    ensure
+      ENV.delete("DEEPGRAM_MIP_OPT_OUT")
+    end
+
+    test "deepgram_mip_opt_out? returns false for other values" do
+      ENV["DEEPGRAM_MIP_OPT_OUT"] = "no"
+      assert_not EarlScribe::Config.deepgram_mip_opt_out?
+    ensure
+      ENV.delete("DEEPGRAM_MIP_OPT_OUT")
+    end
   end
 end

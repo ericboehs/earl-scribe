@@ -43,6 +43,7 @@ module EarlScribe
       def params
         base = base_params
         base["multichannel"] = "true" if channels > 1
+        base["mip_opt_out"] = "true" if Config.deepgram_mip_opt_out?
         base
       end
 
