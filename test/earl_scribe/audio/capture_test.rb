@@ -42,6 +42,62 @@ module EarlScribe
         assert_equal "10", cmd[segment_idx + 1]
       end
 
+      test "streaming_command never includes recording args" do
+        capture = EarlScribe::Audio::Capture.new(device_index: 0, recording_path: "/tmp/test.m4a")
+        cmd = capture.streaming_command
+
+        assert_not_includes cmd, "aac"
+        assert_equal "-", cmd.last
+      end
+
+      test "start_streaming tees data to encoder when recording_path set" do
+        capture = EarlScribe::Audio::Capture.new(device_index: 0, recording_path: "/tmp/test.m4a")
+        mock_io = StringIO.new("audiodata")
+        mock_io.define_singleton_method(:pid) { 99_999 }
+
+        encoder_data = StringIO.new
+        encoder_data.define_singleton_method(:pid) { 99_998 }
+
+        received = []
+        IO.stub(:popen, ->(cmd, *args, **_opts) { cmd.include?("pipe:0") ? encoder_data : mock_io }) do
+          capture.start_streaming { |data| received << data }
+        end
+
+        assert_not_empty received
+        assert_not_empty encoder_data.string
+      end
+
+      test "start_streaming skips encoder when no recording_path" do
+        capture = EarlScribe::Audio::Capture.new(device_index: 0)
+        mock_io = StringIO.new("audiodata")
+        mock_io.define_singleton_method(:pid) { 99_999 }
+
+        popen_calls = []
+        popen_stub = lambda { |cmd, *_args, **_opts|
+          popen_calls << cmd
+          mock_io
+        }
+        IO.stub(:popen, popen_stub) do
+          capture.start_streaming { |_data| nil }
+        end
+
+        assert_equal 1, popen_calls.size
+      end
+
+      test "chunked_command includes AAC args when recording_path set" do
+        capture = EarlScribe::Audio::Capture.new(device_index: 0, recording_path: "/tmp/test.m4a")
+        cmd = capture.chunked_command("/tmp/output")
+
+        assert_includes cmd, "aac"
+        assert_includes cmd, "64k"
+        assert_equal "/tmp/test.m4a", cmd.last
+      end
+
+      test "recording_path is accessible" do
+        capture = EarlScribe::Audio::Capture.new(device_index: 0, recording_path: "/tmp/rec.m4a")
+        assert_equal "/tmp/rec.m4a", capture.recording_path
+      end
+
       test "attributes are accessible" do
         capture = EarlScribe::Audio::Capture.new(device_index: 3, channels: 1, sample_rate: 44_100)
         assert_equal 3, capture.device_index

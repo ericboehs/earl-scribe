@@ -2,91 +2,100 @@
 
 require "tmpdir"
 require "fileutils"
+require_relative "transcribe_banner"
 
 module EarlScribe
   module Cli
     # Starts a live transcription session via Deepgram or local whisper.cpp
     module Transcribe
-      FLAG_MAP = {
-        "--local" => [:local, true],
-        "--mono" => [:mono, true],
-        "--no-identify" => [:identify, false]
-      }.freeze
+      FLAG_MAP = { "--local" => [:local, true], "--mono" => [:mono, true],
+                   "--no-identify" => [:identify, false], "--record" => [:record, true] }.freeze
 
       def self.run(argv)
         options = parse_options(argv)
         device = Audio::Device.resolve(options[:device])
-
         options[:local] ? run_local(device, options) : run_deepgram(device, options)
       end
 
       def self.parse_options(argv)
-        options = default_options(argv)
-        argv.each { |flag| apply_flag(options, flag) }
-        options
+        default_options(argv).tap { |opts| apply_flags(opts, argv) }
       end
 
       def self.default_options(argv)
         device_index = argv.index("--device")
         device = device_index ? argv[device_index + 1] : Config.audio_device
-        { device: device, local: false, mono: false, identify: true }
+        { device: device, local: false, mono: false, identify: true, record: false }
       end
 
-      def self.apply_flag(options, flag)
-        mapping = FLAG_MAP[flag]
-        options[mapping[0]] = mapping[1] if mapping
+      def self.apply_flags(options, argv)
+        argv.each do |flag|
+          key, val = FLAG_MAP[flag]
+          options[key] = val if key
+        end
       end
 
       def self.run_deepgram(device, options)
         api_key = Config.deepgram_api_key
         abort "DEEPGRAM_API_KEY not set. Get a key at: https://console.deepgram.com/signup" unless api_key
-
-        print_banner(device, options)
-        start_stream(api_key, device, options[:mono] ? 1 : 2)
+        channels = options[:mono] ? 1 : 2
+        resolver = build_resolver(channels, options)
+        recording = options[:record] ? "earl-scribe-#{Time.now.strftime("%Y%m%d_%H%M%S")}.m4a" : nil
+        capture = Audio::Capture.new(device_index: device.index, channels: channels, recording_path: recording)
+        TranscribeBanner.print(device, engine: "Deepgram Nova-3", id_status: resolver ? "enabled" : "disabled",
+                                       mode: options[:mono] ? "mono + diarize" : "stereo (L=Meeting, R=Mic) + diarize",
+                                       recording: recording)
+        start_stream(api_key, capture, resolver)
       end
 
-      def self.start_stream(api_key, device, channels)
-        client = build_client(api_key, channels)
-        Audio::Capture.new(device_index: device.index, channels: channels)
-                      .start_streaming { |data| client.send_audio(data) }
+      def self.build_resolver(channels, options)
+        return nil unless options[:identify] && Speaker::Encoder.available?
+
+        Speaker::SessionResolver.new(
+          pcm_buffer: Audio::PcmBuffer.new(sample_rate: 16_000, channels: channels),
+          identifier: Speaker::Identifier.new(store: Speaker::Store.new),
+          tmp_dir: Dir.mktmpdir("earl-scribe")
+        )
+      end
+
+      def self.start_stream(api_key, capture, resolver)
+        client = Transcription::Deepgram.new(api_key: api_key, channels: capture.channels)
+        client.connect(->(result) { handle_result(result, resolver) })
+        capture.start_streaming do |data|
+          client.send_audio(data)
+          resolver&.pcm_buffer&.append(data)
+        end
       rescue Interrupt
         client.close
+        resolver&.shutdown
       end
 
-      def self.build_client(api_key, channels)
-        client = Transcription::Deepgram.new(api_key: api_key, channels: channels)
-        client.connect(method(:handle_result))
-        client
+      def self.handle_result(result, resolver)
+        words = result[:words]
+        Transcription::WordGrouper.group(words).each do |seg|
+          resolve_speaker(seg, words, resolver)
+          puts seg
+        end
       end
 
-      def self.handle_result(result)
-        Transcription::WordGrouper.group(result[:words]).each { |seg| puts seg }
+      def self.resolve_speaker(segment, words, resolver)
+        match = resolver && segment.speaker&.match(/Speaker (\d+)\z/)
+        segment.speaker = resolver.resolve_label(match[1].to_i, words) if match
       end
 
       def self.run_local(device, options)
         whisper = Transcription::Whisper.new
         abort "whisper.cpp not available. Set WHISPER_CPP_PATH and WHISPER_MODELS_DIR." unless whisper.available?
-
-        identifier = build_identifier(options)
-        print_local_banner(device, identifier)
-        run_chunked_pipeline(device, whisper, identifier)
+        id_ok = options[:identify] && Speaker::Encoder.available?
+        identifier = id_ok ? Speaker::Identifier.new(store: Speaker::Store.new) : nil
+        recording = options[:record] ? "earl-scribe-#{Time.now.strftime("%Y%m%d_%H%M%S")}.m4a" : nil
+        TranscribeBanner.print(device, engine: "whisper.cpp", mode: "local", id_status: id_ok ? "enabled" : "disabled",
+                                       recording: recording)
+        run_chunked_pipeline(device, whisper, identifier, recording)
       end
 
-      def self.print_local_banner(device, identifier)
-        id_status = identifier ? "enabled" : "disabled"
-        warn "=== Meeting Transcription (whisper.cpp) ===\nDevice:     [#{device.index}] #{device.name}\n" \
-             "Mode:       local\nSpeaker ID: #{id_status}\n\nRecording... Press Ctrl+C to stop.\n---\n"
-      end
-
-      def self.build_identifier(options)
-        return nil unless options[:identify] && Speaker::Encoder.available?
-
-        Speaker::Identifier.new(store: Speaker::Store.new)
-      end
-
-      def self.run_chunked_pipeline(device, whisper, identifier)
+      def self.run_chunked_pipeline(device, whisper, identifier, recording)
         Dir.mktmpdir("earl-scribe") do |tmp_dir|
-          capture = Audio::Capture.new(device_index: device.index, channels: 1)
+          capture = Audio::Capture.new(device_index: device.index, channels: 1, recording_path: recording)
           capture.start_chunked(tmp_dir, chunk_seconds: Config.audio_chunk_seconds) do |wav_path|
             process_chunk(wav_path, whisper, identifier)
           end
@@ -106,24 +115,13 @@ module EarlScribe
       end
 
       def self.identify_speaker(wav_path, identifier)
-        return nil unless identifier
-
-        embedding = Speaker::Encoder.encode(wav_path)
-        name, _similarity = identifier.identify(embedding)
-        name
+        identifier&.identify(Speaker::Encoder.encode(wav_path))&.first
       end
 
-      def self.print_banner(device, options)
-        mode = options[:mono] ? "mono + diarize" : "stereo (L=Meeting, R=Mic) + diarize"
-        warn "=== Meeting Transcription (Deepgram Nova-3) ===\nDevice: [#{device.index}] #{device.name}\n" \
-             "Mode:   #{mode}\n\nRecording... Press Ctrl+C to stop.\n---\n"
-      end
-
-      private_class_method :parse_options, :default_options, :apply_flag,
-                           :run_deepgram, :start_stream, :build_client,
-                           :handle_result, :run_local, :print_local_banner,
-                           :build_identifier, :run_chunked_pipeline,
-                           :process_chunk, :identify_speaker, :print_banner
+      private_class_method :parse_options, :default_options, :apply_flags, :run_deepgram,
+                           :build_resolver, :start_stream, :handle_result, :resolve_speaker,
+                           :run_local, :run_chunked_pipeline, :process_chunk,
+                           :identify_speaker
     end
   end
 end

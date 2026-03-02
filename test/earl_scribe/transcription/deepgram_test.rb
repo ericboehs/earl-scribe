@@ -128,6 +128,48 @@ module EarlScribe
         assert closed
       end
 
+      test "error handler suppresses stream closed errors" do
+        handlers = {}
+        mock_conn = Object.new
+        mock_conn.define_singleton_method(:on) { |event, &block| handlers[event] = block }
+
+        WebSocket::Client::Simple.stub(:connect, mock_conn) do
+          WebsocketFactory.create("wss://example.com", MessageHandler.new(proc {}))
+        end
+
+        error = IOError.new("stream closed in another thread")
+        logged = []
+        logger = Logger.new(StringIO.new)
+        logger.define_singleton_method(:error) { |msg| logged << msg }
+
+        EarlScribe.stub(:logger, logger) do
+          handlers[:error].call(error)
+        end
+
+        assert_empty logged
+      end
+
+      test "error handler logs real errors" do
+        handlers = {}
+        mock_conn = Object.new
+        mock_conn.define_singleton_method(:on) { |event, &block| handlers[event] = block }
+
+        WebSocket::Client::Simple.stub(:connect, mock_conn) do
+          WebsocketFactory.create("wss://example.com", MessageHandler.new(proc {}))
+        end
+
+        error = RuntimeError.new("connection refused")
+        logged = []
+        logger = Logger.new(StringIO.new)
+        logger.define_singleton_method(:error) { |msg| logged << msg }
+
+        EarlScribe.stub(:logger, logger) do
+          handlers[:error].call(error)
+        end
+
+        assert_includes logged.first, "connection refused"
+      end
+
       private
 
       def mock_websocket

@@ -7,3 +7,4 @@
 *.gem
 Gemfile.lock
 .overcommit.yml.local
+earl-scribe-*.m4a

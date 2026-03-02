@@ -147,15 +147,17 @@ module EarlScribe
       test "run_deepgram prints stereo banner and starts stream" do
         device = build_device
         client = build_mock_client
-        capture = build_mock_capture
+        capture = build_mock_streaming_capture("data")
 
         EarlScribe::Audio::Device.stub(:resolve, device) do
           EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
-            EarlScribe::Transcription::Deepgram.stub(:new, client) do
-              EarlScribe::Audio::Capture.stub(:new, capture) do
-                _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
-                assert_includes stderr, "stereo"
-                assert_includes stderr, "Deepgram Nova-3"
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::Capture.stub(:new, capture) do
+                  _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                  assert_includes stderr, "stereo"
+                  assert_includes stderr, "Deepgram Nova-3"
+                end
               end
             end
           end
@@ -169,10 +171,265 @@ module EarlScribe
 
         EarlScribe::Audio::Device.stub(:resolve, device) do
           EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
-            EarlScribe::Transcription::Deepgram.stub(:new, client) do
-              EarlScribe::Audio::Capture.stub(:new, capture) do
-                _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--mono"]) }
-                assert_includes stderr, "mono"
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::Capture.stub(:new, capture) do
+                  _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--mono"]) }
+                  assert_includes stderr, "mono"
+                end
+              end
+            end
+          end
+        end
+      end
+
+      test "run_deepgram with speaker ID enabled tees data to PcmBuffer" do
+        device = build_device
+        client = build_mock_client
+        buffer_data = []
+        capture = build_mock_streaming_capture("audio_chunk")
+
+        mock_resolver = build_mock_resolver(buffer_data)
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, true) do
+              EarlScribe::Speaker::SessionResolver.stub(:new, mock_resolver) do
+                EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                  EarlScribe::Audio::Capture.stub(:new, capture) do
+                    capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                  end
+                end
+              end
+            end
+          end
+        end
+
+        assert_equal ["audio_chunk"], buffer_data
+      end
+
+      test "run_deepgram with --no-identify skips resolver creation" do
+        device = build_device
+        client = build_mock_client
+        capture = build_mock_capture
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, true) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::Capture.stub(:new, capture) do
+                  _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--no-identify"]) }
+                  assert_includes stderr, "Speaker ID: disabled"
+                end
+              end
+            end
+          end
+        end
+      end
+
+      test "run_deepgram with resolver replaces speaker labels in output" do
+        device = build_device
+        captured_callback = nil
+        client = Object.new
+        client.define_singleton_method(:connect) { |cb| captured_callback = cb }
+        client.define_singleton_method(:send_audio) { |_data| nil }
+        client.define_singleton_method(:close) { nil }
+
+        mock_resolver = Object.new
+        mock_resolver.define_singleton_method(:pcm_buffer) { nil }
+        mock_resolver.define_singleton_method(:resolve_label) { |_id, _w| "Alice" }
+        mock_resolver.define_singleton_method(:shutdown) { nil }
+
+        capture = build_mock_streaming_capture("data")
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, true) do
+              EarlScribe::Speaker::SessionResolver.stub(:new, mock_resolver) do
+                EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                  EarlScribe::Audio::Capture.stub(:new, capture) do
+                    capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                  end
+                end
+              end
+            end
+          end
+        end
+
+        words = [{ "word" => "hi", "punctuated_word" => "Hi", "speaker" => 0, "start" => 0.0, "end" => 0.5 }]
+        stdout, _stderr = capture_io { captured_callback.call({ words: words }) }
+        assert_includes stdout, "Alice: Hi"
+      end
+
+      test "run_deepgram without resolver outputs default Speaker N labels" do
+        device = build_device
+        captured_callback = nil
+        client = Object.new
+        client.define_singleton_method(:connect) { |cb| captured_callback = cb }
+        client.define_singleton_method(:send_audio) { |_data| nil }
+        client.define_singleton_method(:close) { nil }
+
+        capture = build_mock_capture
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::Capture.stub(:new, capture) do
+                  capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                end
+              end
+            end
+          end
+        end
+
+        words = [{ "word" => "hi", "punctuated_word" => "Hi", "speaker" => 0, "start" => 0.0, "end" => 0.5 }]
+        stdout, _stderr = capture_io { captured_callback.call({ words: words }) }
+        assert_includes stdout, "Speaker 0: Hi"
+      end
+
+      test "run_deepgram handles interrupt with resolver" do
+        device = build_device
+        client = build_mock_client
+        shutdown_called = false
+        mock_resolver = build_mock_resolver([])
+        mock_resolver.define_singleton_method(:shutdown) { shutdown_called = true }
+
+        interrupt_capture = Object.new
+        interrupt_capture.define_singleton_method(:channels) { 2 }
+        interrupt_capture.define_singleton_method(:start_streaming) { |&_block| raise Interrupt }
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, true) do
+              EarlScribe::Speaker::SessionResolver.stub(:new, mock_resolver) do
+                EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                  EarlScribe::Audio::Capture.stub(:new, interrupt_capture) do
+                    capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                  end
+                end
+              end
+            end
+          end
+        end
+
+        assert shutdown_called
+      end
+
+      test "run_deepgram handles interrupt without resolver" do
+        device = build_device
+        client = build_mock_client
+        close_called = false
+        client.define_singleton_method(:close) { close_called = true }
+
+        interrupt_capture = Object.new
+        interrupt_capture.define_singleton_method(:channels) { 2 }
+        interrupt_capture.define_singleton_method(:start_streaming) { |&_block| raise Interrupt }
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::Capture.stub(:new, interrupt_capture) do
+                  capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                end
+              end
+            end
+          end
+        end
+
+        assert close_called
+      end
+
+      test "run_deepgram with --record shows recording path in banner" do
+        device = build_device
+        client = build_mock_client
+        capture = build_mock_capture
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::Capture.stub(:new, capture) do
+                  _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--record"]) }
+                  assert_includes stderr, "Recording:  earl-scribe-"
+                  assert_includes stderr, ".m4a"
+                end
+              end
+            end
+          end
+        end
+      end
+
+      test "run_deepgram without --record omits recording line" do
+        device = build_device
+        client = build_mock_client
+        capture = build_mock_capture
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::Capture.stub(:new, capture) do
+                  _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                  assert_not_includes stderr, "Recording:"
+                end
+              end
+            end
+          end
+        end
+      end
+
+      test "run_local with --record shows recording path in banner" do
+        device = build_device
+        whisper = build_mock_whisper(available: true, text: nil)
+        mock_capture = build_mock_chunked_capture([])
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Transcription::Whisper.stub(:new, whisper) do
+            EarlScribe::Audio::Capture.stub(:new, mock_capture) do
+              EarlScribe::Speaker::Encoder.stub(:available?, false) do
+                _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--local", "--record"]) }
+                assert_includes stderr, "Recording:  earl-scribe-"
+                assert_includes stderr, ".m4a"
+              end
+            end
+          end
+        end
+      end
+
+      test "run_local without --record omits recording line" do
+        device = build_device
+        whisper = build_mock_whisper(available: true, text: nil)
+        mock_capture = build_mock_chunked_capture([])
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Transcription::Whisper.stub(:new, whisper) do
+            EarlScribe::Audio::Capture.stub(:new, mock_capture) do
+              EarlScribe::Speaker::Encoder.stub(:available?, false) do
+                _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--local"]) }
+                assert_not_includes stderr, "Recording:"
+              end
+            end
+          end
+        end
+      end
+
+      test "run_deepgram banner shows speaker ID enabled" do
+        device = build_device
+        client = build_mock_client
+        capture = build_mock_capture
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, true) do
+              EarlScribe::Speaker::SessionResolver.stub(:new, build_mock_resolver([])) do
+                EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                  EarlScribe::Audio::Capture.stub(:new, capture) do
+                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                    assert_includes stderr, "Speaker ID: enabled"
+                  end
+                end
               end
             end
           end
@@ -195,6 +452,7 @@ module EarlScribe
 
       def build_mock_capture
         capture = Object.new
+        capture.define_singleton_method(:channels) { 2 }
         capture.define_singleton_method(:start_streaming) { |&_block| nil }
         capture
       end
@@ -218,6 +476,26 @@ module EarlScribe
         identifier = Object.new
         identifier.define_singleton_method(:identify) { |_embedding| [name, 0.9] }
         identifier
+      end
+
+      def build_mock_streaming_capture(data)
+        capture = Object.new
+        capture.define_singleton_method(:channels) { 2 }
+        capture.define_singleton_method(:start_streaming) do |&block|
+          block.call(data)
+        end
+        capture
+      end
+
+      def build_mock_resolver(buffer_data)
+        pcm_buffer = Object.new
+        pcm_buffer.define_singleton_method(:append) { |data| buffer_data << data }
+
+        resolver = Object.new
+        resolver.define_singleton_method(:pcm_buffer) { pcm_buffer }
+        resolver.define_singleton_method(:resolve_label) { |speaker_id, _words| "Speaker #{speaker_id}" }
+        resolver.define_singleton_method(:shutdown) { nil }
+        resolver
       end
     end
   end

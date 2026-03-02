@@ -22,7 +22,7 @@ module EarlScribe
         raise Error, "DEEPGRAM_API_KEY is required" unless api_key
 
         handler = MessageHandler.new(callback)
-        @connection = WebsocketFactory.create(websocket_url, handler)
+        @connection = WebsocketFactory.create(websocket_url, handler, headers: auth_headers)
       end
 
       def send_audio(data)
@@ -56,19 +56,25 @@ module EarlScribe
           "sample_rate" => sample_rate.to_s, "channels" => channels.to_s
         }
       end
+
+      def auth_headers
+        { "Authorization" => "Token #{api_key}" }
+      end
     end
 
     # Creates and configures WebSocket connections with message/error handlers
     module WebsocketFactory
-      def self.create(url, handler)
-        connection = WebSocket::Client::Simple.connect(url)
+      def self.create(url, handler, headers: {})
+        connection = WebSocket::Client::Simple.connect(url, headers: headers)
         attach_handlers(connection, handler)
         connection
       end
 
       def self.attach_handlers(connection, handler)
         connection.on(:message) { |msg| handler.dispatch(msg) }
-        connection.on(:error) { |err| EarlScribe.logger.error("Deepgram error: #{err.message}") }
+        connection.on(:error) do |err|
+          EarlScribe.logger.error("Deepgram error: #{err.message}") unless err.message.include?("stream closed")
+        end
       end
 
       private_class_method :attach_handlers

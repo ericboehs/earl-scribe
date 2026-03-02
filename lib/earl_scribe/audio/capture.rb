@@ -6,12 +6,13 @@ module EarlScribe
   module Audio
     # FFmpeg subprocess for live audio capture
     class Capture
-      attr_reader :device_index, :channels, :sample_rate
+      attr_reader :device_index, :channels, :sample_rate, :recording_path
 
-      def initialize(device_index:, channels: 2, sample_rate: 16_000)
+      def initialize(device_index:, channels: 2, sample_rate: 16_000, recording_path: nil)
         @device_index = device_index
         @channels = channels
         @sample_rate = sample_rate
+        @recording_path = recording_path
         @process = nil
       end
 
@@ -29,15 +30,20 @@ module EarlScribe
           "-ac", channels.to_s, "-ar", sample_rate.to_s,
           "-f", "segment", "-segment_time", chunk_seconds.to_s,
           "-strftime", "1",
-          File.join(output_dir, "%Y%m%d_%H%M%S.wav")
+          File.join(output_dir, "%Y%m%d_%H%M%S.wav"),
+          *recording_args
         ]
       end
 
       def start_streaming(&block)
-        cmd = streaming_command
-        @process = IO.popen(cmd, "rb", err: File::NULL)
-        read_loop(&block)
+        @process = IO.popen(streaming_command, "rb", err: File::NULL)
+        encoder = open_encoder
+        read_loop do |data|
+          encoder&.write(data)
+          block.call(data)
+        end
       ensure
+        finalize_encoder(encoder)
         stop
       end
 
@@ -63,6 +69,28 @@ module EarlScribe
       end
 
       private
+
+      def recording_args
+        return [] unless recording_path
+
+        ["-c:a", "aac", "-b:a", "64k", recording_path]
+      end
+
+      def open_encoder
+        return unless recording_path
+
+        # nosemgrep: ruby.lang.security.dangerous-exec.dangerous-exec
+        IO.popen(["ffmpeg", "-f", "s16le", "-ac", channels.to_s, "-ar", sample_rate.to_s,
+                  "-i", "pipe:0", "-c:a", "aac", "-b:a", "64k", recording_path], "wb", err: File::NULL)
+      end
+
+      def finalize_encoder(encoder)
+        return unless encoder
+
+        encoder.close
+      rescue IOError
+        nil
+      end
 
       def read_loop
         chunk_size = 4096
