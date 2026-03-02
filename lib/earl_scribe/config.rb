@@ -5,6 +5,7 @@ module EarlScribe
   class Config
     DEFAULTS = {
       "DEEPGRAM_API_KEY" => nil,
+      "DEEPGRAM_MIP_OPT_OUT" => nil,
       "WHISPER_CPP_PATH" => "whisper-cpp",
       "WHISPER_MODELS_DIR" => nil,
       "WHISPER_MODEL" => "large-v3",
@@ -38,6 +39,10 @@ module EarlScribe
 
     def self.audio_chunk_seconds
       get("AUDIO_CHUNK_SECONDS").to_i
+    end
+
+    def self.deepgram_mip_opt_out?
+      %w[1 true yes].include?(get("DEEPGRAM_MIP_OPT_OUT")&.downcase)
     end
   end
 end
