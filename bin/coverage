@@ -1,0 +1,70 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "bundler/inline"
+
+gemfile do
+  source "https://rubygems.org"
+  gem "nokogiri"
+end
+
+# Path to the SimpleCov HTML report
+coverage_file = File.join(Dir.pwd, "coverage", "index.html")
+
+unless File.exist?(coverage_file)
+  puts "No coverage report found at #{coverage_file}"
+  puts "Run tests first: bundle exec rake test"
+  exit 1
+end
+
+# Parse the HTML file
+doc = Nokogiri::HTML(File.read(coverage_file))
+
+# Extract overall line coverage
+line_percent = doc.css(".covered_percent span").first&.text&.strip
+total_lines = doc.css(".t-line-summary b").first&.text&.strip
+covered_lines = doc.css(".t-line-summary .green b").first&.text&.strip
+missed_lines = doc.css(".t-line-summary .red b").first&.text&.strip
+
+# Extract overall branch coverage
+overall_branch_summary = doc.css(".t-branch-summary").first
+if overall_branch_summary
+  branch_percent = overall_branch_summary.css("span").last.text.strip.gsub(/[()]/, "")
+  branch_summary_spans = overall_branch_summary.css("span b")
+  overall_total_branches = branch_summary_spans[0]&.text&.strip
+  overall_covered_branches = branch_summary_spans[1]&.text&.strip
+  overall_missed_branches = branch_summary_spans[2]&.text&.strip
+else
+  branch_percent = nil
+  overall_total_branches = nil
+  overall_covered_branches = nil
+  overall_missed_branches = nil
+end
+
+puts "## SimpleCov Coverage Report"
+puts ""
+
+puts "### Line Coverage: #{line_percent}"
+puts "  #{covered_lines}/#{total_lines} lines covered"
+puts "  #{missed_lines} lines missed"
+puts ""
+
+if branch_percent
+  puts "### Branch Coverage: #{branch_percent}"
+  puts "  #{overall_covered_branches}/#{overall_total_branches} branches covered"
+  puts "  #{overall_missed_branches} branches missed"
+  puts ""
+end
+
+# Check thresholds
+line_pct_value = line_percent.to_s.gsub("%", "").to_f
+branch_pct_value = branch_percent&.gsub("%", "")&.to_f
+
+if line_pct_value >= 95 && (!branch_pct_value || branch_pct_value >= 95)
+  puts "Coverage meets quality thresholds (95% line + branch)"
+else
+  puts "Coverage below thresholds!"
+  puts "  Line: #{line_pct_value}% (need 95%)" if line_pct_value < 95
+  puts "  Branch: #{branch_pct_value}% (need 95%)" if branch_pct_value && branch_pct_value < 95
+  exit 1
+end

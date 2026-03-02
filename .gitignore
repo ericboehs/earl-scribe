@@ -1,0 +1,9 @@
+/.bundle/
+/.ruby-lsp/
+/.claude/
+/coverage/
+/pkg/
+/tmp/
+*.gem
+Gemfile.lock
+.overcommit.yml.local

@@ -1,0 +1,20 @@
+{
+  "type": "Results",
+  "channel_index": [0],
+  "is_final": true,
+  "channel": {
+    "alternatives": [
+      {
+        "transcript": "Hello everyone. Thanks for joining.",
+        "confidence": 0.97,
+        "words": [
+          {"word": "Hello", "punctuated_word": "Hello", "start": 0.0, "end": 0.5, "speaker": 0},
+          {"word": "everyone", "punctuated_word": "everyone.", "start": 0.5, "end": 1.0, "speaker": 0},
+          {"word": "Thanks", "punctuated_word": "Thanks", "start": 1.5, "end": 2.0, "speaker": 1},
+          {"word": "for", "punctuated_word": "for", "start": 2.0, "end": 2.2, "speaker": 1},
+          {"word": "joining", "punctuated_word": "joining.", "start": 2.2, "end": 2.8, "speaker": 1}
+        ]
+      }
+    ]
+  }
+}

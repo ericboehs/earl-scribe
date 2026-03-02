@@ -1,0 +1,21 @@
+{
+  "type": "Results",
+  "channel_index": [0],
+  "is_final": true,
+  "channel": {
+    "alternatives": [
+      {
+        "transcript": "Hello everyone, welcome to the meeting.",
+        "confidence": 0.98,
+        "words": [
+          {"word": "Hello", "punctuated_word": "Hello", "start": 0.0, "end": 0.5, "speaker": 0},
+          {"word": "everyone", "punctuated_word": "everyone,", "start": 0.5, "end": 1.0, "speaker": 0},
+          {"word": "welcome", "punctuated_word": "welcome", "start": 1.0, "end": 1.5, "speaker": 0},
+          {"word": "to", "punctuated_word": "to", "start": 1.5, "end": 1.6, "speaker": 0},
+          {"word": "the", "punctuated_word": "the", "start": 1.6, "end": 1.7, "speaker": 0},
+          {"word": "meeting", "punctuated_word": "meeting.", "start": 1.7, "end": 2.0, "speaker": 0}
+        ]
+      }
+    ]
+  }
+}

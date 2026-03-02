@@ -1,0 +1,14 @@
+# Reek configuration. See https://github.com/troessner/reek
+
+exclude_paths:
+  - .bundle
+  - .git-hooks
+  - test
+
+detectors:
+  UtilityFunction:
+    public_methods_only: true
+  TooManyStatements:
+    max_statements: 10
+  TooManyMethods:
+    max_methods: 20
