@@ -58,6 +58,22 @@ module EarlScribe
         assert_equal "linear16", params["encoding"]
       end
 
+      test "params includes mip_opt_out when enabled" do
+        EarlScribe::Config.stub(:deepgram_mip_opt_out?, true) do
+          client = EarlScribe::Transcription::Deepgram.new(api_key: "key")
+          assert_equal "true", client.params["mip_opt_out"]
+          assert_includes client.websocket_url, "mip_opt_out=true"
+        end
+      end
+
+      test "params excludes mip_opt_out when disabled" do
+        EarlScribe::Config.stub(:deepgram_mip_opt_out?, false) do
+          client = EarlScribe::Transcription::Deepgram.new(api_key: "key")
+          assert_nil client.params["mip_opt_out"]
+          assert_not_includes client.websocket_url, "mip_opt_out"
+        end
+      end
+
       test "connect raises error without api key" do
         client = EarlScribe::Transcription::Deepgram.new(api_key: nil)
         error = assert_raises(EarlScribe::Error) { client.connect(proc {}) }

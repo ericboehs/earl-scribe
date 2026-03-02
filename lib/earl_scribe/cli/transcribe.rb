@@ -67,14 +67,15 @@ module EarlScribe
         whisper = Transcription::Whisper.new
         abort "whisper.cpp not available. Set WHISPER_CPP_PATH and WHISPER_MODELS_DIR." unless whisper.available?
 
-        print_local_banner(device)
         identifier = build_identifier(options)
+        print_local_banner(device, identifier)
         run_chunked_pipeline(device, whisper, identifier)
       end
 
-      def self.print_local_banner(device)
-        warn "=== Meeting Transcription (whisper.cpp) ===\nDevice: [#{device.index}] #{device.name}\n" \
-             "Mode:   local\n\nRecording... Press Ctrl+C to stop.\n---\n"
+      def self.print_local_banner(device, identifier)
+        id_status = identifier ? "enabled" : "disabled"
+        warn "=== Meeting Transcription (whisper.cpp) ===\nDevice:     [#{device.index}] #{device.name}\n" \
+             "Mode:       local\nSpeaker ID: #{id_status}\n\nRecording... Press Ctrl+C to stop.\n---\n"
       end
 
       def self.build_identifier(options)

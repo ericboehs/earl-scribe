@@ -176,6 +176,7 @@ module EarlScribe
       test "poll_for_chunks yields previous file when new one appears" do
         Dir.mktmpdir("capture_test") do |tmp_dir|
           capture = EarlScribe::Audio::Capture.new(device_index: 0)
+          capture.instance_variable_set(:@yielded, Set.new)
 
           wav1 = File.join(tmp_dir, "20260302_100000.wav")
           wav2 = File.join(tmp_dir, "20260302_100010.wav")
