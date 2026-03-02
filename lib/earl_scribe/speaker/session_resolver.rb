@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require "monitor"
 
 module EarlScribe
@@ -17,6 +18,7 @@ module EarlScribe
       def initialize(pcm_buffer:, identifier:, tmp_dir:)
         super()
         @pcm_buffer = pcm_buffer
+        @tmp_dir = tmp_dir
         @cache = {}
         @queue = Thread::Queue.new
         @worker = Thread.new { process_jobs(identifier, tmp_dir) }
@@ -35,6 +37,7 @@ module EarlScribe
       def shutdown
         @queue.close
         @worker.join(5)
+        FileUtils.rm_rf(@tmp_dir) if @tmp_dir
       end
 
       private
@@ -64,11 +67,15 @@ module EarlScribe
       def process_single_job(job, identifier, tmp_dir)
         speaker_id = job[:speaker_id]
         wav_path = @pcm_buffer.extract_wav(job[:start_time], job[:end_time], tmp_dir: tmp_dir)
-        return unless wav_path
+        unless wav_path
+          synchronize { @cache.delete(speaker_id) }
+          return
+        end
 
         identify_from_wav(speaker_id, wav_path, identifier)
       rescue StandardError => error
-        EarlScribe.logger.debug("Speaker identification failed for speaker #{speaker_id}: #{error.message}")
+        synchronize { @cache.delete(speaker_id) }
+        EarlScribe.logger.warn("Speaker identification failed for speaker #{speaker_id}: #{error.message}")
       end
 
       def identify_from_wav(speaker_id, wav_path, identifier)

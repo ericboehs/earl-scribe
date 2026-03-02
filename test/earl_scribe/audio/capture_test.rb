@@ -125,7 +125,6 @@ module EarlScribe
       test "stop kills process and closes io" do
         capture = EarlScribe::Audio::Capture.new(device_index: 0)
         mock_io = StringIO.new("")
-        nil
         mock_io.define_singleton_method(:pid) { 99_999 }
 
         IO.stub(:popen, mock_io) do

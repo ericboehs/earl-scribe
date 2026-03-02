@@ -2,7 +2,6 @@
 
 require "test_helper"
 require "open3"
-require "tempfile"
 
 module EarlScribe
   module Transcription

@@ -73,7 +73,11 @@ module EarlScribe
       def self.attach_handlers(connection, handler)
         connection.on(:message) { |msg| handler.dispatch(msg) }
         connection.on(:error) do |err|
-          EarlScribe.logger.error("Deepgram error: #{err.message}") unless err.message.include?("stream closed")
+          if err.message == "stream closed in another thread"
+            EarlScribe.logger.debug("WebSocket closed during shutdown")
+          else
+            EarlScribe.logger.error("Deepgram error: #{err.message}")
+          end
         end
       end
 

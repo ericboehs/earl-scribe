@@ -128,7 +128,7 @@ module EarlScribe
         assert closed
       end
 
-      test "error handler suppresses stream closed errors" do
+      test "error handler logs stream closed at debug level" do
         handlers = {}
         mock_conn = Object.new
         mock_conn.define_singleton_method(:on) { |event, &block| handlers[event] = block }
@@ -138,15 +138,18 @@ module EarlScribe
         end
 
         error = IOError.new("stream closed in another thread")
-        logged = []
+        error_logged = []
+        debug_logged = []
         logger = Logger.new(StringIO.new)
-        logger.define_singleton_method(:error) { |msg| logged << msg }
+        logger.define_singleton_method(:error) { |msg| error_logged << msg }
+        logger.define_singleton_method(:debug) { |msg| debug_logged << msg }
 
         EarlScribe.stub(:logger, logger) do
           handlers[:error].call(error)
         end
 
-        assert_empty logged
+        assert_empty error_logged
+        assert_includes debug_logged.first, "shutdown"
       end
 
       test "error handler logs real errors" do

@@ -88,8 +88,8 @@ module EarlScribe
         return unless encoder
 
         encoder.close
-      rescue IOError
-        nil
+      rescue IOError => error
+        EarlScribe.logger.warn("Recording may be incomplete: #{error.message}")
       end
 
       def read_loop

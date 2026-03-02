@@ -115,7 +115,9 @@ module EarlScribe
       end
 
       def self.identify_speaker(wav_path, identifier)
-        identifier&.identify(Speaker::Encoder.encode(wav_path))&.first
+        return unless identifier
+
+        identifier.identify(Speaker::Encoder.encode(wav_path))&.first
       end
 
       private_class_method :parse_options, :default_options, :apply_flags, :run_deepgram,
