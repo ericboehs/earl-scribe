@@ -22,7 +22,12 @@ def main():
         print(f"Error: file not found: {wav_path}", file=sys.stderr)
         sys.exit(1)
 
+    # VoiceEncoder prints "Loaded encoder..." to stdout on init; redirect to stderr
+    _real_stdout = sys.stdout
+    sys.stdout = sys.stderr
     encoder = VoiceEncoder()
+    sys.stdout = _real_stdout
+
     wav = preprocess_wav(wav_path)
     embedding = encoder.embed_utterance(wav)
     print(json.dumps(embedding.tolist()))

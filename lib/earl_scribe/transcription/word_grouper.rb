@@ -5,7 +5,7 @@ module EarlScribe
     # Groups consecutive words by speaker into labeled Result segments
     module WordGrouper
       # Accumulates words for a single speaker segment
-      Segment = Struct.new(:speaker_id, :words, keyword_init: true)
+      Segment = Struct.new(:speaker_id, :words, :raw_words, keyword_init: true)
 
       def self.group(words, speaker_prefix: nil)
         return [] unless words&.any?
@@ -20,8 +20,9 @@ module EarlScribe
 
           if current&.speaker_id == speaker
             current.words << text
+            current.raw_words << word
           else
-            segments << Segment.new(speaker_id: speaker, words: [text])
+            segments << Segment.new(speaker_id: speaker, words: [text], raw_words: [word])
           end
         end
       end
@@ -33,7 +34,9 @@ module EarlScribe
       def self.to_result(segment, prefix)
         speaker_id = segment.speaker_id
         label = prefix ? "#{prefix} Speaker #{speaker_id}" : "Speaker #{speaker_id}"
-        Result.new(speaker: label, text: segment.words.join(" "))
+        raw = segment.raw_words
+        Result.new(speaker: label, text: segment.words.join(" "),
+                   start_time: raw.first["start"], end_time: raw.last["end"])
       end
 
       private_class_method :build_segments, :extract_word_info, :to_result

@@ -63,6 +63,26 @@ module EarlScribe
 
         assert_instance_of EarlScribe::Transcription::Result, segments[0]
       end
+
+      test "results include start_time and end_time from word timestamps" do
+        json = read_fixture("transcription/deepgram_multi_speaker.json")
+        words = JSON.parse(json).dig("channel", "alternatives", 0, "words")
+
+        segments = EarlScribe::Transcription::WordGrouper.group(words)
+
+        assert_in_delta 0.0, segments[0].start_time, 0.001
+        assert_in_delta 1.0, segments[0].end_time, 0.001
+        assert_in_delta 1.5, segments[1].start_time, 0.001
+        assert_in_delta 2.8, segments[1].end_time, 0.001
+      end
+
+      test "start_time and end_time are nil when words lack timestamps" do
+        words = [{ "word" => "hello", "speaker" => 0 }]
+        segments = EarlScribe::Transcription::WordGrouper.group(words)
+
+        assert_nil segments[0].start_time
+        assert_nil segments[0].end_time
+      end
     end
   end
 end

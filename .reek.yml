@@ -10,5 +10,9 @@ detectors:
     public_methods_only: true
   TooManyStatements:
     max_statements: 10
+  TooManyInstanceVariables:
+    max_instance_variables: 5
+  LongParameterList:
+    max_params: 4
   TooManyMethods:
     max_methods: 20
