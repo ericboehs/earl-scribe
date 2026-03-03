@@ -9,8 +9,8 @@ module EarlScribe
         lines << "Device:     [#{device.index}] #{device.name}\n"
         lines << "Mode:       #{mode}\n"
         lines << "Speaker ID: #{id_status}\n"
-        lines << "Transcript: #{paths[:transcript]}\n" if paths[:transcript]
-        lines << "Recording:  #{paths[:recording]}\n" if paths[:recording]
+        paths[:transcript]&.tap { |path| lines << "Transcript: #{path}\n" }
+        paths[:recording]&.tap { |path| lines << "Recording:  #{path}\n" }
         lines << "\nRecording... Press Ctrl+C to stop.\n---\n"
         warn lines
       end

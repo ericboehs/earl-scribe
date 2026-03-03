@@ -22,7 +22,10 @@ module EarlScribe
         puts text
         return if @closed
 
-        File.open(@path, "a") { |f| f.puts(text) }
+        File.open(@path, "a") { |file| file.puts(text) }
+      rescue SystemCallError => error
+        @closed = true
+        warn "WARNING: Transcript write failed: #{error.message}. Continuing with stdout only."
       end
 
       def close
