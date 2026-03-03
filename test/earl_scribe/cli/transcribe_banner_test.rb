@@ -23,7 +23,7 @@ module EarlScribe
 
         _stdout, stderr = capture_io do
           TranscribeBanner.print(device, engine: "whisper.cpp", mode: "local", id_status: "disabled",
-                                         recording: "earl-scribe-20260302_140000.m4a")
+                                         paths: { recording: "earl-scribe-20260302_140000.m4a" })
         end
 
         assert_includes stderr, "Recording:  earl-scribe-20260302_140000.m4a"
@@ -37,6 +37,27 @@ module EarlScribe
         end
 
         assert_not_includes stderr, "Recording:"
+      end
+
+      test "includes transcript path when provided" do
+        device = EarlScribe::Audio::Device::DeviceInfo.new(index: 0, name: "TestMic")
+
+        _stdout, stderr = capture_io do
+          TranscribeBanner.print(device, engine: "Deepgram Nova-3", mode: "stereo", id_status: "disabled",
+                                         paths: { transcript: "/tmp/earl-scribe-20260302_140000.txt" })
+        end
+
+        assert_includes stderr, "Transcript: /tmp/earl-scribe-20260302_140000.txt"
+      end
+
+      test "omits transcript line when not provided" do
+        device = EarlScribe::Audio::Device::DeviceInfo.new(index: 0, name: "TestMic")
+
+        _stdout, stderr = capture_io do
+          TranscribeBanner.print(device, engine: "Deepgram Nova-3", mode: "stereo", id_status: "disabled")
+        end
+
+        assert_not_includes stderr, "Transcript:"
       end
     end
   end

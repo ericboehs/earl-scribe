@@ -13,6 +13,7 @@ require_relative "earl_scribe/transcription/hallucination_filter"
 require_relative "earl_scribe/transcription/result_parser"
 require_relative "earl_scribe/transcription/word_grouper"
 require_relative "earl_scribe/transcription/deepgram"
+require_relative "earl_scribe/transcription/transcript_writer"
 require_relative "earl_scribe/transcription/whisper"
 require_relative "earl_scribe/speaker/store"
 require_relative "earl_scribe/speaker/encoder"
@@ -27,6 +28,12 @@ module EarlScribe
 
   def self.config_root
     File.join(Dir.home, ".config", "earl-scribe")
+  end
+
+  def self.data_dir
+    ENV.fetch("EARL_SCRIBE_DATA_DIR") do
+      File.join(ENV.fetch("XDG_DATA_HOME", File.join(Dir.home, ".local", "share")), "earl-scribe")
+    end
   end
 
   def self.logger

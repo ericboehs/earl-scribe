@@ -2,6 +2,7 @@
 
 require "fileutils"
 require "monitor"
+require "tmpdir"
 
 module EarlScribe
   module Speaker
@@ -14,6 +15,13 @@ module EarlScribe
       MIN_DURATION = 2.0 # seconds of audio needed for identification
 
       attr_reader :pcm_buffer
+
+      def self.build(channels:, identify:)
+        return nil unless identify && Encoder.available?
+
+        new(pcm_buffer: Audio::PcmBuffer.new(sample_rate: 16_000, channels: channels),
+            identifier: Identifier.new(store: Store.new), tmp_dir: Dir.mktmpdir("earl-scribe"))
+      end
 
       def initialize(pcm_buffer:, identifier:, tmp_dir:)
         super()

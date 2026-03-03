@@ -135,6 +135,24 @@ module EarlScribe
         resolver.shutdown
       end
 
+      test "build returns nil when identify is false" do
+        assert_nil SessionResolver.build(channels: 2, identify: false)
+      end
+
+      test "build returns nil when encoder unavailable" do
+        Encoder.stub(:available?, false) do
+          assert_nil SessionResolver.build(channels: 2, identify: true)
+        end
+      end
+
+      test "build returns resolver when identify true and encoder available" do
+        Encoder.stub(:available?, true) do
+          resolver = SessionResolver.build(channels: 2, identify: true)
+          assert_instance_of SessionResolver, resolver
+          resolver.shutdown
+        end
+      end
+
       test "returns Speaker N when identifier finds no match" do
         @pcm_buffer.append("\x01" * 128_000)
 
