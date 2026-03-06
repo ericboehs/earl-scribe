@@ -160,6 +160,24 @@ module EarlScribe
         end
       end
 
+      test "run_list pluralizes samples when count greater than one" do
+        store = EarlScribe::Speaker::Store.new(speakers_dir: @tmpdir)
+        store.save("TestUser", embeddings: [[0.1], [0.2]], samples: ["a.wav"])
+
+        EarlScribe::Speaker::Store.stub(:new, store) do
+          stdout, _stderr = capture_io { EarlScribe::Cli::Speakers.run(["list"]) }
+          assert_includes stdout, "2 samples"
+        end
+      end
+
+      test "run dispatches learn subcommand" do
+        learn_called = false
+        EarlScribe::Cli::Learn.stub(:run, ->(_argv) { learn_called = true }) do
+          EarlScribe::Cli::Speakers.run(["learn"])
+        end
+        assert learn_called
+      end
+
       test "run_test marks MATCH for high similarity" do
         setup_fixture_speakers
         store = EarlScribe::Speaker::Store.new(speakers_dir: @tmpdir)

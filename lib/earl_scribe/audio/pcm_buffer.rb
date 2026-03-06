@@ -32,11 +32,15 @@ module EarlScribe
         synchronize { @buffer.bytesize.to_f / bytes_per_second }
       end
 
-      def extract_wav(start_time, end_time, tmp_dir:)
+      def extract_wav(start_time, end_time, tmp_dir:, channel: nil)
         pcm_slice = extract_pcm_slice(start_time, end_time)
         return nil unless pcm_slice
 
-        write_wav(pcm_slice, tmp_dir)
+        if channel && channels > 1
+          write_wav(demux_channel(pcm_slice, channel), tmp_dir, out_channels: 1)
+        else
+          write_wav(pcm_slice, tmp_dir)
+        end
       end
 
       private
@@ -69,18 +73,31 @@ module EarlScribe
         end
       end
 
-      def write_wav(pcm_data, tmp_dir)
+      def demux_channel(pcm_data, channel_index)
+        frame_size = channels * BYTES_PER_SAMPLE
+        offset = channel_index * BYTES_PER_SAMPLE
+        mono = String.new(encoding: Encoding::BINARY)
+        pos = 0
+        while pos + frame_size <= pcm_data.bytesize
+          mono << pcm_data.byteslice(pos + offset, BYTES_PER_SAMPLE)
+          pos += frame_size
+        end
+        mono
+      end
+
+      def write_wav(pcm_data, tmp_dir, out_channels: channels)
         path = File.join(tmp_dir, "speaker_#{Time.now.to_f}.wav")
-        File.binwrite(path, wav_header(pcm_data.bytesize) + pcm_data)
+        File.binwrite(path, wav_header(pcm_data.bytesize, out_channels) + pcm_data)
         path
       end
 
-      def wav_header(data_size)
-        block_align = channels * BYTES_PER_SAMPLE
+      def wav_header(data_size, num_channels)
+        block_align = num_channels * BYTES_PER_SAMPLE
+        byte_rate = sample_rate * block_align
 
         [
           "RIFF", 36 + data_size, "WAVE",
-          "fmt ", 16, 1, channels, sample_rate, bytes_per_second, block_align, 16,
+          "fmt ", 16, 1, num_channels, sample_rate, byte_rate, block_align, 16,
           "data", data_size
         ].pack("A4VA4A4VvvVVvvA4V")
       end

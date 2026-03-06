@@ -23,7 +23,7 @@ module EarlScribe
 
         _stdout, stderr = capture_io do
           TranscribeBanner.print(device, engine: "whisper.cpp", mode: "local", id_status: "disabled",
-                                         paths: { recording: "earl-scribe-20260302_140000.m4a" })
+                                         session: { recording: "earl-scribe-20260302_140000.m4a" })
         end
 
         assert_includes stderr, "Recording:  earl-scribe-20260302_140000.m4a"
@@ -44,7 +44,7 @@ module EarlScribe
 
         _stdout, stderr = capture_io do
           TranscribeBanner.print(device, engine: "Deepgram Nova-3", mode: "stereo", id_status: "disabled",
-                                         paths: { transcript: "/tmp/earl-scribe-20260302_140000.txt" })
+                                         session: { transcript: "/tmp/earl-scribe-20260302_140000.txt" })
         end
 
         assert_includes stderr, "Transcript: /tmp/earl-scribe-20260302_140000.txt"

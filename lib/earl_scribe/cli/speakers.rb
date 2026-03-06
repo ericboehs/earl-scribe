@@ -4,7 +4,7 @@ module EarlScribe
   module Cli
     # Manages speaker voiceprints: enroll, list, delete, identify, test
     module Speakers
-      SUBCOMMANDS = %w[enroll list delete identify test].freeze
+      SUBCOMMANDS = %w[enroll list delete identify test learn].freeze
 
       USAGE = <<~TEXT
         Usage: earl-scribe speakers <subcommand>
@@ -15,6 +15,7 @@ module EarlScribe
           delete "Name"            Delete a speaker voiceprint
           identify file.wav         Identify the speaker in an audio file
           test file.wav             Show similarity scores for all speakers
+          learn                     Learn speakers from past recordings
       TEXT
 
       def self.run(argv)
@@ -119,11 +120,16 @@ module EarlScribe
         puts format("  %-20<name>s avg=%<sim>.3f%<marker>s", name: data["name"], sim: sim, marker: marker)
       end
 
+      def self.run_learn(argv)
+        Learn.run(argv)
+      end
+
       private_class_method :load_or_init_speaker, :save_enrollment,
                            :encode_samples, :encode_one_sample,
                            :print_speaker, :identify_speaker, :print_identification,
                            :print_scores, :print_score_line,
-                           :run_enroll, :run_list, :run_delete, :run_identify, :run_test
+                           :run_enroll, :run_list, :run_delete, :run_identify, :run_test,
+                           :run_learn
     end
   end
 end

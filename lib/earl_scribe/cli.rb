@@ -3,6 +3,7 @@
 require_relative "cli/transcribe"
 require_relative "cli/speakers"
 require_relative "cli/devices"
+require_relative "cli/learn"
 
 module EarlScribe
   # CLI dispatcher routing subcommands to handlers

@@ -148,6 +148,34 @@ module EarlScribe
         end
       end
 
+      test "run_local passes threshold to identifier" do
+        device = build_device
+        whisper = build_mock_whisper(available: true, text: "Hello")
+        mock_capture = build_mock_chunked_capture(["/tmp/chunk1.wav"])
+        received_threshold = nil
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Transcription::Whisper.stub(:new, whisper) do
+            EarlScribe::Audio::Capture.stub(:new, mock_capture) do
+              EarlScribe::Speaker::Encoder.stub(:available?, true) do
+                EarlScribe::Speaker::Encoder.stub(:encode, ->(_p) { [0.1, 0.2] }) do
+                  original_new = EarlScribe::Speaker::Identifier.method(:new)
+                  EarlScribe::Speaker::Identifier.stub(:new, lambda { |**kwargs|
+                    received_threshold = kwargs[:threshold]
+                    original_new.call(**kwargs)
+                  }) do
+                    EarlScribe.stub(:data_dir, @data_dir) do
+                      capture_io { EarlScribe::Cli::Transcribe.run(["--local", "--threshold", "0.5"]) }
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+        assert_in_delta 0.5, received_threshold
+      end
+
       test "run_local prints whisper.cpp banner" do
         device = build_device
         whisper = build_mock_whisper(available: true, text: nil)
@@ -285,8 +313,8 @@ module EarlScribe
 
         mock_resolver = Object.new
         mock_resolver.define_singleton_method(:pcm_buffer) { nil }
-        mock_resolver.define_singleton_method(:resolve_label) { |_id, _w| "Alice" }
-        mock_resolver.define_singleton_method(:shutdown) { nil }
+        mock_resolver.define_singleton_method(:resolve_label) { |_id, _w, **_opts| "Alice" }
+        mock_resolver.define_singleton_method(:shutdown) { {} }
 
         capture = build_mock_streaming_capture("data")
 
@@ -307,11 +335,11 @@ module EarlScribe
         end
 
         words = [{ "word" => "hi", "punctuated_word" => "Hi", "speaker" => 0, "start" => 0.0, "end" => 0.5 }]
-        stdout, _stderr = capture_io { captured_callback.call({ words: words }) }
+        stdout, _stderr = capture_io { captured_callback.call({ words: words, channel_index: 0 }) }
         assert_includes stdout, "Alice: Hi"
       end
 
-      test "run_deepgram without resolver outputs default Speaker N labels" do
+      test "run_deepgram without resolver outputs channel-prefixed Speaker N labels in stereo" do
         device = build_device
         captured_callback = nil
         client = Object.new
@@ -336,8 +364,40 @@ module EarlScribe
         end
 
         words = [{ "word" => "hi", "punctuated_word" => "Hi", "speaker" => 0, "start" => 0.0, "end" => 0.5 }]
-        stdout, _stderr = capture_io { captured_callback.call({ words: words }) }
+        stdout, _stderr = capture_io { captured_callback.call({ words: words, channel_index: 0 }) }
+        assert_includes stdout, "Ch0 Speaker 0: Hi"
+      end
+
+      test "run_deepgram mono mode outputs Speaker N labels without channel prefix" do
+        device = build_device
+        captured_callback = nil
+        client = Object.new
+        client.define_singleton_method(:connect) { |cb| captured_callback = cb }
+        client.define_singleton_method(:send_audio) { |_data| nil }
+        client.define_singleton_method(:close) { nil }
+
+        mono_capture = Object.new
+        mono_capture.define_singleton_method(:channels) { 1 }
+        mono_capture.define_singleton_method(:start_streaming) { |&_block| nil }
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::Capture.stub(:new, mono_capture) do
+                  EarlScribe.stub(:data_dir, @data_dir) do
+                    capture_io { EarlScribe::Cli::Transcribe.run(["--mono"]) }
+                  end
+                end
+              end
+            end
+          end
+        end
+
+        words = [{ "word" => "hi", "punctuated_word" => "Hi", "speaker" => 0, "start" => 0.0, "end" => 0.5 }]
+        stdout, _stderr = capture_io { captured_callback.call({ words: words, channel_index: 0 }) }
         assert_includes stdout, "Speaker 0: Hi"
+        assert_not_includes stdout, "Ch0"
       end
 
       test "run_deepgram handles interrupt with resolver" do
@@ -345,7 +405,10 @@ module EarlScribe
         client = build_mock_client
         shutdown_called = false
         mock_resolver = build_mock_resolver([])
-        mock_resolver.define_singleton_method(:shutdown) { shutdown_called = true }
+        mock_resolver.define_singleton_method(:shutdown) do
+          shutdown_called = true
+          {}
+        end
 
         interrupt_capture = Object.new
         interrupt_capture.define_singleton_method(:channels) { 2 }
@@ -368,6 +431,72 @@ module EarlScribe
         end
 
         assert shutdown_called
+      end
+
+      test "run_deepgram interrupt with speaker map corrects files" do
+        device = build_device
+        client = build_mock_client
+        rewrite_called = false
+        mock_resolver = build_mock_resolver([])
+        mock_resolver.define_singleton_method(:shutdown) do
+          { "0" => "Alice" }
+        end
+
+        interrupt_capture = Object.new
+        interrupt_capture.define_singleton_method(:channels) { 2 }
+        interrupt_capture.define_singleton_method(:start_streaming) { |&_block| raise Interrupt }
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, true) do
+              EarlScribe::Speaker::SessionResolver.stub(:build, mock_resolver) do
+                EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                  EarlScribe::Audio::Capture.stub(:new, interrupt_capture) do
+                    EarlScribe.stub(:data_dir, @data_dir) do
+                      EarlScribe::Cli::LearnRewriter.stub(:rewrite, ->(rec, updates) { rewrite_called = true }) do
+                        capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+
+        assert rewrite_called
+      end
+
+      test "run_deepgram interrupt with empty speaker map skips file correction" do
+        device = build_device
+        client = build_mock_client
+        rewrite_called = false
+        mock_resolver = build_mock_resolver([])
+        mock_resolver.define_singleton_method(:shutdown) { {} }
+
+        interrupt_capture = Object.new
+        interrupt_capture.define_singleton_method(:channels) { 2 }
+        interrupt_capture.define_singleton_method(:start_streaming) { |&_block| raise Interrupt }
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, true) do
+              EarlScribe::Speaker::SessionResolver.stub(:build, mock_resolver) do
+                EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                  EarlScribe::Audio::Capture.stub(:new, interrupt_capture) do
+                    EarlScribe.stub(:data_dir, @data_dir) do
+                      EarlScribe::Cli::LearnRewriter.stub(:rewrite, ->(rec, updates) { rewrite_called = true }) do
+                        capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+
+        assert_not rewrite_called
       end
 
       test "run_deepgram handles interrupt without resolver" do
@@ -544,6 +673,142 @@ module EarlScribe
         end
       end
 
+      test "run_deepgram shows meeting title in banner when calendar returns event" do
+        device = build_device
+        client = build_mock_client
+        capture = build_mock_capture
+        meeting = { title: "EERT Standup", id: "cal-123" }
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::Capture.stub(:new, capture) do
+                  EarlScribe.stub(:data_dir, @data_dir) do
+                    EarlScribe::Calendar.stub(:current_meeting, meeting) do
+                      _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                      assert_includes stderr, "Meeting:    EERT Standup"
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+
+      test "run_deepgram creates jsonl sidecar file" do
+        device = build_device
+        client = build_mock_client
+        capture = build_mock_capture
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::Capture.stub(:new, capture) do
+                  EarlScribe.stub(:data_dir, @data_dir) do
+                    capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                    jsonl_files = Dir.glob(File.join(@data_dir, "*.jsonl"))
+                    assert_equal 1, jsonl_files.size
+                    content = File.read(jsonl_files.first)
+                    assert_includes content, '"type":"metadata"'
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+
+      test "run_local creates jsonl sidecar file" do
+        device = build_device
+        whisper = build_mock_whisper(available: true, text: "Hello world")
+        mock_capture = build_mock_chunked_capture(["/tmp/chunk1.wav"])
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Transcription::Whisper.stub(:new, whisper) do
+            EarlScribe::Audio::Capture.stub(:new, mock_capture) do
+              EarlScribe::Speaker::Encoder.stub(:available?, false) do
+                EarlScribe.stub(:data_dir, @data_dir) do
+                  capture_io { EarlScribe::Cli::Transcribe.run(["--local"]) }
+                  jsonl_files = Dir.glob(File.join(@data_dir, "*.jsonl"))
+                  assert_equal 1, jsonl_files.size
+                end
+              end
+            end
+          end
+        end
+      end
+
+      test "run_local outputs timestamped lines to stdout" do
+        device = build_device
+        whisper = build_mock_whisper(available: true, text: "Hello world")
+        mock_capture = build_mock_chunked_capture(["/tmp/chunk1.wav"])
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Transcription::Whisper.stub(:new, whisper) do
+            EarlScribe::Audio::Capture.stub(:new, mock_capture) do
+              EarlScribe::Speaker::Encoder.stub(:available?, false) do
+                EarlScribe.stub(:data_dir, @data_dir) do
+                  stdout, _stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--local"]) }
+                  assert_match(/\[\d{2}:\d{2}:\d{2}\]/, stdout)
+                  assert_includes stdout, "Hello world"
+                end
+              end
+            end
+          end
+        end
+      end
+
+      test "run_local with meeting shows meeting title in banner" do
+        device = build_device
+        whisper = build_mock_whisper(available: true, text: nil)
+        mock_capture = build_mock_chunked_capture([])
+        meeting = { title: "Team Sync", id: "xyz" }
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Transcription::Whisper.stub(:new, whisper) do
+            EarlScribe::Audio::Capture.stub(:new, mock_capture) do
+              EarlScribe::Speaker::Encoder.stub(:available?, false) do
+                EarlScribe.stub(:data_dir, @data_dir) do
+                  EarlScribe::Calendar.stub(:current_meeting, meeting) do
+                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--local"]) }
+                    assert_includes stderr, "Meeting:    Team Sync"
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+
+      test "run_deepgram with meeting writes metadata with meeting title" do
+        device = build_device
+        client = build_mock_client
+        capture = build_mock_capture
+        meeting = { title: "Sprint Planning", id: "cal-456" }
+
+        EarlScribe::Audio::Device.stub(:resolve, device) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::Capture.stub(:new, capture) do
+                  EarlScribe.stub(:data_dir, @data_dir) do
+                    EarlScribe::Calendar.stub(:current_meeting, meeting) do
+                      capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                      jsonl_files = Dir.glob(File.join(@data_dir, "*.jsonl"))
+                      content = File.read(jsonl_files.first)
+                      assert_includes content, "Sprint Planning"
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+
       private
 
       def build_device
@@ -601,8 +866,8 @@ module EarlScribe
 
         resolver = Object.new
         resolver.define_singleton_method(:pcm_buffer) { pcm_buffer }
-        resolver.define_singleton_method(:resolve_label) { |speaker_id, _words| "Speaker #{speaker_id}" }
-        resolver.define_singleton_method(:shutdown) { nil }
+        resolver.define_singleton_method(:resolve_label) { |_cache_key, _words, **_opts| nil }
+        resolver.define_singleton_method(:shutdown) { {} }
         resolver
       end
     end

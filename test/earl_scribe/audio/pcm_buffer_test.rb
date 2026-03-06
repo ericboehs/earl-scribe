@@ -98,6 +98,60 @@ module EarlScribe
         end
       end
 
+      test "extract_wav with channel extracts mono from stereo" do
+        Dir.mktmpdir("pcm_test") do |tmp_dir|
+          buffer = PcmBuffer.new(sample_rate: 16_000, channels: 2)
+          # 1 second stereo: interleaved L/R samples (each 2 bytes)
+          # L=0x0100 R=0x0200 repeated for 16000 frames
+          frame = [0x0001, 0x0002].pack("v2")
+          pcm_data = frame * 16_000
+          buffer.append(pcm_data)
+
+          path = buffer.extract_wav(0.0, 1.0, tmp_dir: tmp_dir, channel: 0)
+          wav_data = File.binread(path)
+
+          # Header should say mono
+          assert_equal 1, wav_data[22, 2].unpack1("v")
+          # Data size should be half (mono)
+          data_size = wav_data[40, 4].unpack1("V")
+          assert_equal 32_000, data_size # 16000 samples * 2 bytes
+
+          # All samples should be left channel value (0x0001)
+          pcm = wav_data[44..]
+          samples = pcm.unpack("v*")
+          assert(samples.all? { |s| s == 0x0001 })
+        end
+      end
+
+      test "extract_wav with channel 1 extracts right channel" do
+        Dir.mktmpdir("pcm_test") do |tmp_dir|
+          buffer = PcmBuffer.new(sample_rate: 16_000, channels: 2)
+          frame = [0x0001, 0x0002].pack("v2")
+          pcm_data = frame * 16_000
+          buffer.append(pcm_data)
+
+          path = buffer.extract_wav(0.0, 1.0, tmp_dir: tmp_dir, channel: 1)
+          wav_data = File.binread(path)
+
+          pcm = wav_data[44..]
+          samples = pcm.unpack("v*")
+          assert(samples.all? { |s| s == 0x0002 })
+        end
+      end
+
+      test "extract_wav without channel keeps stereo" do
+        Dir.mktmpdir("pcm_test") do |tmp_dir|
+          buffer = PcmBuffer.new(sample_rate: 16_000, channels: 2)
+          pcm_data = "\x01" * 128_000 # 2 seconds stereo
+          buffer.append(pcm_data)
+
+          path = buffer.extract_wav(0.0, 1.0, tmp_dir: tmp_dir)
+          wav_data = File.binread(path)
+
+          assert_equal 2, wav_data[22, 2].unpack1("v")
+        end
+      end
+
       test "duration returns zero for empty buffer" do
         assert_in_delta 0.0, @buffer.duration, 0.001
       end

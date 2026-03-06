@@ -12,86 +12,117 @@ module EarlScribe
     class SessionResolver
       include MonitorMixin
 
-      MIN_DURATION = 2.0 # seconds of audio needed for identification
+      MIN_DURATION = 2.0
+      SPEAKER_RE = /\A((?:Ch\d+ )?)(\d+)\z/.freeze
 
       attr_reader :pcm_buffer
 
-      def self.build(channels:, identify:)
+      def self.build(channels:, identify:, threshold: nil, &on_speaker_identified)
         return nil unless identify && Encoder.available?
 
+        encoder = Encoder.start_server
         new(pcm_buffer: Audio::PcmBuffer.new(sample_rate: 16_000, channels: channels),
-            identifier: Identifier.new(store: Store.new), tmp_dir: Dir.mktmpdir("earl-scribe"))
+            identifier: Identifier.new(store: Store.new, threshold: threshold),
+            tmp_dir: Dir.mktmpdir("earl-scribe"), encoder: encoder, &on_speaker_identified)
+      rescue StandardError
+        encoder&.shutdown
+        raise
       end
 
-      def initialize(pcm_buffer:, identifier:, tmp_dir:)
+      def initialize(pcm_buffer:, identifier:, tmp_dir:, encoder: Encoder, &on_speaker_identified)
         super()
         @pcm_buffer = pcm_buffer
         @tmp_dir = tmp_dir
+        @encoder = encoder
+        @on_speaker_identified = on_speaker_identified
         @cache = {}
         @queue = Thread::Queue.new
         @worker = Thread.new { process_jobs(identifier, tmp_dir) }
       end
 
-      def resolve_label(speaker_id, words)
+      def resolve_label(cache_key, words, channel: nil)
         synchronize do
-          cached = @cache[speaker_id]
-          return cached if cached.is_a?(String)
-
-          queue_identification(speaker_id, words) unless cached == :pending
-          "Speaker #{speaker_id}"
+          cached = @cache[cache_key]
+          if cached.is_a?(String)
+            enqueue(cache_key, words, :verify, channel: channel)
+            return cached
+          end
+          enqueue(cache_key, words, :identify, channel: channel) unless cached == :pending
+          nil
         end
       end
 
       def shutdown
         @queue.close
         @worker.join(5)
+        @encoder.shutdown if @encoder.is_a?(Encoder::PersistentProcess)
+        cache = synchronize { @cache.select { |_, v| v.is_a?(String) } }
         FileUtils.rm_rf(@tmp_dir) if @tmp_dir
+        cache
       end
 
       private
 
-      def queue_identification(speaker_id, words)
-        start_time = words.first&.dig("start")
-        end_time = words.last&.dig("end")
-        return unless start_time && end_time
-        return if end_time - start_time < MIN_DURATION
+      def enqueue(cache_key, words, type, channel: nil)
+        s = words.first&.dig("start")
+        e = words.last&.dig("end")
+        return unless s && e && e - s >= MIN_DURATION
 
-        @cache[speaker_id] = :pending
-        @queue << { speaker_id: speaker_id, start_time: start_time, end_time: end_time }
+        @cache[cache_key] = :pending if type == :identify
+        @queue << { cache_key: cache_key, start_time: s, end_time: e, type: type, channel: channel }
       end
 
       def process_jobs(identifier, tmp_dir)
-        while (job = next_job)
+        while (job = @queue.pop)
           process_single_job(job, identifier, tmp_dir)
         end
-      end
-
-      def next_job
-        @queue.pop
-      rescue ThreadError
-        nil
+      rescue ThreadError # rubocop:disable Lint/SuppressedException -- queue closed
       end
 
       def process_single_job(job, identifier, tmp_dir)
-        speaker_id = job[:speaker_id]
-        wav_path = @pcm_buffer.extract_wav(job[:start_time], job[:end_time], tmp_dir: tmp_dir)
-        unless wav_path
-          synchronize { @cache.delete(speaker_id) }
-          return
-        end
+        cache_key = job[:cache_key]
+        wav_path = @pcm_buffer.extract_wav(job[:start_time], job[:end_time],
+                                           tmp_dir: tmp_dir, channel: job[:channel])
+        return clear_pending(cache_key, job[:type]) unless wav_path
 
-        identify_from_wav(speaker_id, wav_path, identifier)
+        identify_from_wav(cache_key, wav_path, identifier, job[:type])
       rescue StandardError => error
-        synchronize { @cache.delete(speaker_id) }
-        EarlScribe.logger.warn("Speaker identification failed for speaker #{speaker_id}: #{error.message}")
+        clear_pending(cache_key, job[:type])
+        EarlScribe.logger.warn("Speaker identification failed for #{cache_key}: #{error.message}")
       end
 
-      def identify_from_wav(speaker_id, wav_path, identifier)
-        embedding = Encoder.encode(wav_path)
-        name, _similarity = identifier.identify(embedding)
-        synchronize { @cache[speaker_id] = name } if name
+      def clear_pending(cache_key, job_type)
+        synchronize { @cache.delete(cache_key) } if job_type == :identify
+      end
+
+      def identify_from_wav(cache_key, wav_path, identifier, job_type)
+        name, _similarity = identifier.identify(@encoder.encode(wav_path))
+        if name
+          apply_result(cache_key, name, job_type)
+        else
+          clear_pending(cache_key, job_type)
+        end
       ensure
         FileUtils.rm_f(wav_path)
+      end
+
+      def apply_result(cache_key, name, job_type)
+        synchronize do
+          old = @cache[cache_key]
+          @cache[cache_key] = name
+          old_label = resolve_old_label(cache_key, old, name, job_type)
+          @on_speaker_identified&.call(cache_key, old_label, name) if old_label
+        end
+      end
+
+      def resolve_old_label(cache_key, old, name, job_type)
+        return speaker_label(cache_key) if job_type == :identify
+
+        old if old.is_a?(String) && old != name
+      end
+
+      def speaker_label(cache_key)
+        (m = cache_key.match(SPEAKER_RE)) ? "#{m[1]}Speaker #{m[2]}" : cache_key
       end
     end
   end
