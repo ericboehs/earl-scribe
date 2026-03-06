@@ -8,9 +8,9 @@ module EarlScribe
 
       attr_reader :store, :threshold
 
-      def initialize(store:, threshold: DEFAULT_THRESHOLD)
+      def initialize(store:, threshold: nil)
         @store = store
-        @threshold = threshold
+        @threshold = threshold || DEFAULT_THRESHOLD
       end
 
       def identify(embedding)
