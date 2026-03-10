@@ -10,12 +10,12 @@ module EarlScribe
     DEPRIORITIZED_AVAILABILITY = %w[free].freeze
 
     def self.current_meeting
-      stdout, _stderr, status = Open3.capture3(
-        "ical", "list",
-        "-f", "30 minutes ago", "-t", "in 30 minutes",
-        "-c", "VA", "-c", "eric.boehs@oddball.io",
-        "--output", "json"
-      )
+      calendars = Config.calendar_names
+      return unless calendars
+
+      cmd = ["ical", "list", "-f", "30 minutes ago", "-t", "in 30 minutes", "--output", "json"]
+      calendars.each { |name| cmd.push("-c", name) }
+      stdout, _stderr, status = Open3.capture3(*cmd)
       return unless status.success?
 
       select_best_event(stdout)

@@ -4,23 +4,33 @@ require "test_helper"
 
 module EarlScribe
   class CalendarTest < Minitest::Test
+    test "current_meeting returns nil when no calendars configured" do
+      Config.stub(:calendar_names, nil) do
+        assert_nil Calendar.current_meeting
+      end
+    end
+
     test "current_meeting returns meeting hash on success" do
       json = '[{"title":"EERT Standup","start_date":"2026-03-03T13:00:00",' \
              '"end_date":"2026-03-03T13:30:00","id":"abc-123"}]'
       status = Minitest::Mock.new
       status.expect(:success?, true)
 
-      Open3.stub(:capture3, [json, "", status]) do
-        result = Calendar.current_meeting
-        assert_equal "EERT Standup", result[:title]
-        assert_equal "abc-123", result[:id]
+      with_calendars do
+        Open3.stub(:capture3, [json, "", status]) do
+          result = Calendar.current_meeting
+          assert_equal "EERT Standup", result[:title]
+          assert_equal "abc-123", result[:id]
+        end
       end
       status.verify
     end
 
     test "current_meeting returns nil when ical not installed" do
-      Open3.stub(:capture3, ->(*_args) { raise Errno::ENOENT }) do
-        assert_nil Calendar.current_meeting
+      with_calendars do
+        Open3.stub(:capture3, ->(*_args) { raise Errno::ENOENT }) do
+          assert_nil Calendar.current_meeting
+        end
       end
     end
 
@@ -28,20 +38,25 @@ module EarlScribe
       status = Minitest::Mock.new
       status.expect(:success?, true)
 
-      Open3.stub(:capture3, ["[]", "", status]) do
-        assert_nil Calendar.current_meeting
+      with_calendars do
+        Open3.stub(:capture3, ["[]", "", status]) do
+          assert_nil Calendar.current_meeting
+        end
       end
       status.verify
     end
 
     test "current_meeting handles single event object instead of array" do
-      json = '{"title":"Solo Event","start_date":"2026-03-03T14:00:00","end_date":"2026-03-03T14:30:00","id":"solo-1"}'
+      json = '{"title":"Solo Event","start_date":"2026-03-03T14:00:00",' \
+             '"end_date":"2026-03-03T14:30:00","id":"solo-1"}'
       status = Minitest::Mock.new
       status.expect(:success?, true)
 
-      Open3.stub(:capture3, [json, "", status]) do
-        result = Calendar.current_meeting
-        assert_equal "Solo Event", result[:title]
+      with_calendars do
+        Open3.stub(:capture3, [json, "", status]) do
+          result = Calendar.current_meeting
+          assert_equal "Solo Event", result[:title]
+        end
       end
       status.verify
     end
@@ -50,8 +65,10 @@ module EarlScribe
       status = Minitest::Mock.new
       status.expect(:success?, false)
 
-      Open3.stub(:capture3, ["", "error", status]) do
-        assert_nil Calendar.current_meeting
+      with_calendars do
+        Open3.stub(:capture3, ["", "error", status]) do
+          assert_nil Calendar.current_meeting
+        end
       end
       status.verify
     end
@@ -64,9 +81,11 @@ module EarlScribe
       status = Minitest::Mock.new
       status.expect(:success?, true)
 
-      Open3.stub(:capture3, [json, "", status]) do
-        result = Calendar.current_meeting
-        assert_equal "Real Meeting", result[:title]
+      with_calendars do
+        Open3.stub(:capture3, [json, "", status]) do
+          result = Calendar.current_meeting
+          assert_equal "Real Meeting", result[:title]
+        end
       end
       status.verify
     end
@@ -83,9 +102,11 @@ module EarlScribe
       status = Minitest::Mock.new
       status.expect(:success?, true)
 
-      Open3.stub(:capture3, [json, "", status]) do
-        result = Calendar.current_meeting
-        assert_equal "Accepted Meeting", result[:title]
+      with_calendars do
+        Open3.stub(:capture3, [json, "", status]) do
+          result = Calendar.current_meeting
+          assert_equal "Accepted Meeting", result[:title]
+        end
       end
       status.verify
     end
@@ -102,21 +123,26 @@ module EarlScribe
       status = Minitest::Mock.new
       status.expect(:success?, true)
 
-      Open3.stub(:capture3, [json, "", status]) do
-        result = Calendar.current_meeting
-        assert_equal "Pending", result[:title]
+      with_calendars do
+        Open3.stub(:capture3, [json, "", status]) do
+          result = Calendar.current_meeting
+          assert_equal "Pending", result[:title]
+        end
       end
       status.verify
     end
 
     test "current_meeting strips whitespace from title" do
-      json = '[{"title":"  Standup  ","start_date":"2026-03-03T13:00:00","end_date":"2026-03-03T13:30:00","id":"s-1"}]'
+      json = '[{"title":"  Standup  ","start_date":"2026-03-03T13:00:00",' \
+             '"end_date":"2026-03-03T13:30:00","id":"s-1"}]'
       status = Minitest::Mock.new
       status.expect(:success?, true)
 
-      Open3.stub(:capture3, [json, "", status]) do
-        result = Calendar.current_meeting
-        assert_equal "Standup", result[:title]
+      with_calendars do
+        Open3.stub(:capture3, [json, "", status]) do
+          result = Calendar.current_meeting
+          assert_equal "Standup", result[:title]
+        end
       end
       status.verify
     end
@@ -126,9 +152,11 @@ module EarlScribe
       status = Minitest::Mock.new
       status.expect(:success?, true)
 
-      Open3.stub(:capture3, [json, "", status]) do
-        result = Calendar.current_meeting
-        assert_nil result[:title]
+      with_calendars do
+        Open3.stub(:capture3, [json, "", status]) do
+          result = Calendar.current_meeting
+          assert_nil result[:title]
+        end
       end
       status.verify
     end
@@ -143,22 +171,33 @@ module EarlScribe
       status = Minitest::Mock.new
       status.expect(:success?, true)
 
-      Open3.stub(:capture3, [json, "", status]) do
-        result = Calendar.current_meeting
-        assert_equal "Team Sync", result[:title]
+      with_calendars do
+        Open3.stub(:capture3, [json, "", status]) do
+          result = Calendar.current_meeting
+          assert_equal "Team Sync", result[:title]
+        end
       end
       status.verify
     end
 
     test "current_meeting returns nil when only all-day events" do
-      json = '[{"title":"Holiday","all_day":true,"start_date":"2026-03-03","end_date":"2026-03-04","id":"h-1"}]'
+      json = '[{"title":"Holiday","all_day":true,"start_date":"2026-03-03",' \
+             '"end_date":"2026-03-04","id":"h-1"}]'
       status = Minitest::Mock.new
       status.expect(:success?, true)
 
-      Open3.stub(:capture3, [json, "", status]) do
-        assert_nil Calendar.current_meeting
+      with_calendars do
+        Open3.stub(:capture3, [json, "", status]) do
+          assert_nil Calendar.current_meeting
+        end
       end
       status.verify
+    end
+
+    private
+
+    def with_calendars(&block)
+      Config.stub(:calendar_names, %w[test@work.com], &block)
     end
   end
 end

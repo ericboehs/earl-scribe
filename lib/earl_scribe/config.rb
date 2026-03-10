@@ -10,7 +10,8 @@ module EarlScribe
       "WHISPER_MODELS_DIR" => nil,
       "WHISPER_MODEL" => "large-v3",
       "AUDIO_DEVICE" => "Meeting",
-      "AUDIO_CHUNK_SECONDS" => "10"
+      "AUDIO_CHUNK_SECONDS" => "10",
+      "EARL_SCRIBE_CALENDAR_NAMES" => nil
     }.freeze
 
     def self.get(key)
@@ -39,6 +40,11 @@ module EarlScribe
 
     def self.audio_chunk_seconds
       get("AUDIO_CHUNK_SECONDS").to_i
+    end
+
+    def self.calendar_names
+      value = get("EARL_SCRIBE_CALENDAR_NAMES")
+      value&.split(",")&.map(&:strip)
     end
 
     def self.deepgram_mip_opt_out?

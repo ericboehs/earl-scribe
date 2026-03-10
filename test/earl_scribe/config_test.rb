@@ -80,5 +80,17 @@ module EarlScribe
     ensure
       ENV.delete("DEEPGRAM_MIP_OPT_OUT")
     end
+
+    test "calendar_names returns nil by default" do
+      ENV.delete("EARL_SCRIBE_CALENDAR_NAMES")
+      assert_nil EarlScribe::Config.calendar_names
+    end
+
+    test "calendar_names splits comma-separated values" do
+      ENV["EARL_SCRIBE_CALENDAR_NAMES"] = "work@example.com, personal@example.com"
+      assert_equal %w[work@example.com personal@example.com], EarlScribe::Config.calendar_names
+    ensure
+      ENV.delete("EARL_SCRIBE_CALENDAR_NAMES")
+    end
   end
 end
