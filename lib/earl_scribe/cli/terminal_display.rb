@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "mutex_m"
+require "set"
 
 module EarlScribe
   module Cli
@@ -11,7 +12,12 @@ module EarlScribe
 
       MAX_TRACKED_LINES = 200
 
-      TrackedLine = Struct.new(:text, :cache_key, keyword_init: true)
+      # A previously displayed line with its associated speaker cache keys
+      TrackedLine = Struct.new(:text, :cache_keys, keyword_init: true) do
+        def matches?(cache_key, name)
+          cache_keys.include?(cache_key) && text.include?(name)
+        end
+      end
 
       def initialize(output: nil)
         super()
@@ -35,14 +41,15 @@ module EarlScribe
 
       def print_line(text, cache_key: nil)
         synchronize do
-          @lines << TrackedLine.new(text: text, cache_key: cache_key)
+          keys = cache_key ? Set[cache_key] : Set.new
+          @lines << TrackedLine.new(text: text.dup, cache_keys: keys)
           trim_lines
         end
       end
 
       def reprint_speaker(cache_key, old_name, new_name)
         synchronize do
-          if @pending && @pending[:cache_key] == cache_key
+          if @pending && @pending[:cache_keys]&.include?(cache_key)
             @pending[:speaker] = @pending[:speaker]&.gsub(old_name, new_name)
           end
           indices = matching_indices(cache_key, old_name)
@@ -58,7 +65,7 @@ module EarlScribe
       def append_segment(seg, cache_key)
         @pending[:text] << " " << seg.text
         @pending[:end_time] = seg.end_time
-        @pending[:cache_key] = cache_key
+        @pending[:cache_keys] << cache_key
         output.print(" #{seg.text}")
         output.flush
         nil
@@ -67,7 +74,7 @@ module EarlScribe
       def start_segment(seg, cache_key)
         flushed = finalize_pending
         @pending = { speaker: seg.speaker, text: seg.text.dup, start_time: seg.start_time,
-                     end_time: seg.end_time, channel: seg.channel, cache_key: cache_key }
+                     end_time: seg.end_time, channel: seg.channel, cache_keys: Set[cache_key] }
         output.print(build_result.to_timestamped_s)
         output.flush
         flushed
@@ -78,7 +85,7 @@ module EarlScribe
 
         result = build_result
         output.puts
-        @lines << TrackedLine.new(text: result.to_timestamped_s, cache_key: @pending[:cache_key])
+        @lines << TrackedLine.new(text: result.to_timestamped_s.dup, cache_keys: @pending[:cache_keys])
         trim_lines
         @pending = nil
         result
@@ -91,9 +98,7 @@ module EarlScribe
       end
 
       def matching_indices(cache_key, old_name)
-        @lines.each_with_index.filter_map do |tracked, idx|
-          idx if tracked.cache_key == cache_key && tracked.text.include?(old_name)
-        end
+        @lines.each_with_index.filter_map { |line, idx| idx if line.matches?(cache_key, old_name) }
       end
 
       def rewrite_lines(indices, old_name, new_name)
@@ -110,11 +115,11 @@ module EarlScribe
       end
 
       def update_tracked_lines(cache_key, old_name, new_name)
-        @lines.each do |tracked|
-          next unless tracked.cache_key == cache_key
+        matching_lines(cache_key).each { |tracked| tracked.text.gsub!(old_name, new_name) }
+      end
 
-          tracked.text = tracked.text.gsub(old_name, new_name)
-        end
+      def matching_lines(cache_key)
+        @lines.select { |tracked| tracked.cache_keys.include?(cache_key) }
       end
 
       def trim_lines
