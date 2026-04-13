@@ -2,6 +2,7 @@
 
 require "mutex_m"
 require "set"
+require_relative "tracked_line"
 
 module EarlScribe
   module Cli
@@ -11,13 +12,6 @@ module EarlScribe
       include Mutex_m
 
       MAX_TRACKED_LINES = 200
-
-      # A previously displayed line with its associated speaker cache keys
-      TrackedLine = Struct.new(:text, :cache_keys, keyword_init: true) do
-        def matches?(cache_key, name)
-          cache_keys.include?(cache_key) && text.include?(name)
-        end
-      end
 
       def initialize(output: nil)
         super()
