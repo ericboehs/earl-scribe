@@ -10,6 +10,7 @@ module EarlScribe
       "WHISPER_MODELS_DIR" => nil,
       "WHISPER_MODEL" => "large-v3",
       "AUDIO_DEVICE" => "Meeting",
+      "AUDIO_SAMPLE_RATE" => "48000",
       "AUDIO_CHUNK_SECONDS" => "10",
       "EARL_SCRIBE_CALENDAR_NAMES" => nil
     }.freeze
@@ -36,6 +37,10 @@ module EarlScribe
 
     def self.audio_device
       get("AUDIO_DEVICE")
+    end
+
+    def self.audio_sample_rate
+      get("AUDIO_SAMPLE_RATE").to_i
     end
 
     def self.audio_chunk_seconds

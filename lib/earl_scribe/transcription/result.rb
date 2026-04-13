@@ -3,7 +3,7 @@
 module EarlScribe
   module Transcription
     # Immutable transcript segment with speaker, text, timing, and channel info
-    Result = Struct.new(:speaker, :text, :start_time, :end_time, :channel, keyword_init: true) do
+    Result = Struct.new(:speaker, :text, :start_time, :end_time, :channel, :original_speaker, keyword_init: true) do
       def to_s
         speaker ? "#{speaker}: #{text}" : text
       end
@@ -13,7 +13,9 @@ module EarlScribe
       end
 
       def to_h
-        { speaker: speaker, text: text, start_time: start_time, end_time: end_time, channel: channel }
+        result = { speaker: speaker, text: text, start_time: start_time, end_time: end_time, channel: channel }
+        result[:original_speaker] = original_speaker if original_speaker
+        result
       end
 
       def duration

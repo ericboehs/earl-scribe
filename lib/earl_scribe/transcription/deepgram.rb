@@ -11,7 +11,7 @@ module EarlScribe
 
       attr_reader :api_key, :sample_rate, :channels
 
-      def initialize(api_key:, channels: 2, sample_rate: 16_000)
+      def initialize(api_key:, channels: 2, sample_rate: 48_000)
         @api_key = api_key
         @channels = channels
         @sample_rate = sample_rate

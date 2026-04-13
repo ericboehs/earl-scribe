@@ -17,13 +17,16 @@ In **stereo mode** (default), the left channel is the meeting audio (with diariz
 ## Requirements
 
 - **Ruby** >= 2.6
-- **FFmpeg** (for audio capture) — `brew install ffmpeg`
+- **FFmpeg** (for audio capture and recording) — `brew install ffmpeg`
 - **Deepgram API key** (for streaming mode) — [Get one free](https://console.deepgram.com/signup)
 
 ### Optional
 
+- **SoX** (recommended on macOS for clean audio capture) — `brew install sox`
 - **whisper.cpp** + model files (for local transcription)
 - **Python 3** + `resemblyzer` (for speaker identification only)
+
+> **Note:** On macOS, sox uses CoreAudio for capture which produces cleaner audio than ffmpeg's AVFoundation driver. If sox is installed, earl-scribe uses it automatically; otherwise it falls back to ffmpeg.
 
 ## Installation
 
@@ -48,6 +51,9 @@ export DEEPGRAM_API_KEY="your-api-key"
 # Optional: default audio device (name or index)
 export AUDIO_DEVICE="Meeting"
 
+# Optional: audio sample rate (default 48000)
+export AUDIO_SAMPLE_RATE="48000"
+
 # Optional: local whisper.cpp
 export WHISPER_CPP_PATH="/path/to/whisper-cpp"
 export WHISPER_MODELS_DIR="/path/to/models"
@@ -65,9 +71,15 @@ earl-scribe transcribe
 # Mono mode (single mixed channel)
 earl-scribe transcribe --mono
 
+# Record audio to M4A alongside transcription
+earl-scribe transcribe --record
+
 # Use a specific audio device
 earl-scribe transcribe --device "Meeting"
 earl-scribe transcribe --device 2
+
+# Set a custom meeting title (otherwise auto-detected from calendar)
+earl-scribe transcribe --title "Team Standup"
 
 # Local whisper.cpp (experimental)
 earl-scribe transcribe --local

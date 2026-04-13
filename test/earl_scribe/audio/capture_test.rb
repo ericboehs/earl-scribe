@@ -5,24 +5,48 @@ require "test_helper"
 module EarlScribe
   module Audio
     class CaptureTest < Minitest::Test
-      test "streaming_command builds correct ffmpeg command" do
-        capture = EarlScribe::Audio::Capture.new(device_index: 1, channels: 2, sample_rate: 16_000)
+      test "streaming_command uses sox when available and device_name set" do
+        capture = EarlScribe::Audio::Capture.new(device_index: 1, device_name: "Loopback Meeting",
+                                                 channels: 1, sample_rate: 48_000)
+        capture.stub(:sox_available?, true) do
+          cmd = capture.streaming_command
+
+          assert_includes cmd, "sox"
+          assert_includes cmd, "coreaudio"
+          assert_includes cmd, "Loopback Meeting"
+          assert_includes cmd, "48000"
+        end
+      end
+
+      test "streaming_command falls back to ffmpeg when sox unavailable" do
+        capture = EarlScribe::Audio::Capture.new(device_index: 1, device_name: "Loopback Meeting",
+                                                 channels: 2, sample_rate: 48_000)
+        capture.stub(:sox_available?, false) do
+          cmd = capture.streaming_command
+
+          assert_includes cmd, "ffmpeg"
+          assert_includes cmd, ":1"
+          assert_includes cmd, "f32le"
+        end
+      end
+
+      test "streaming_command falls back to ffmpeg when no device_name" do
+        capture = EarlScribe::Audio::Capture.new(device_index: 1, channels: 2, sample_rate: 48_000)
         cmd = capture.streaming_command
 
         assert_includes cmd, "ffmpeg"
-        assert_includes cmd, ":1"
-        assert_includes cmd, "2"
-        assert_includes cmd, "16000"
-        assert_includes cmd, "s16le"
-        assert_includes cmd, "-"
+        assert_includes cmd, "48000"
+        assert_includes cmd, "f32le"
       end
 
       test "streaming_command uses mono channels" do
         capture = EarlScribe::Audio::Capture.new(device_index: 0, channels: 1)
-        cmd = capture.streaming_command
+        capture.stub(:sox_available?, false) do
+          cmd = capture.streaming_command
 
-        ac_index = cmd.index("-ac")
-        assert_equal "1", cmd[ac_index + 1]
+          ac_index = cmd.index("-ac")
+          assert_equal "1", cmd[ac_index + 1]
+        end
       end
 
       test "chunked_command builds correct segmented ffmpeg command" do
@@ -52,7 +76,8 @@ module EarlScribe
 
       test "start_streaming tees data to encoder when recording_path set" do
         capture = EarlScribe::Audio::Capture.new(device_index: 0, recording_path: "/tmp/test.m4a")
-        mock_io = StringIO.new("audiodata")
+        f32_data = [0.5, -0.5].pack("e*")
+        mock_io = StringIO.new(f32_data)
         mock_io.define_singleton_method(:pid) { 99_999 }
 
         encoder_data = StringIO.new
@@ -65,11 +90,14 @@ module EarlScribe
 
         assert_not_empty received
         assert_not_empty encoder_data.string
+        # Block receives s16le converted data
+        assert_equal [0.5, -0.5].map { |f| (f * 32_767).to_i }.pack("s<*"), received.first
       end
 
       test "start_streaming skips encoder when no recording_path" do
         capture = EarlScribe::Audio::Capture.new(device_index: 0)
-        mock_io = StringIO.new("audiodata")
+        f32_data = [0.5].pack("e*")
+        mock_io = StringIO.new(f32_data)
         mock_io.define_singleton_method(:pid) { 99_999 }
 
         popen_calls = []
@@ -82,6 +110,13 @@ module EarlScribe
         end
 
         assert_equal 1, popen_calls.size
+      end
+
+      test "sox_available? checks for sox binary" do
+        capture = EarlScribe::Audio::Capture.new(device_index: 0)
+        capture.remove_instance_variable(:@sox_available) if capture.instance_variable_defined?(:@sox_available)
+        result = capture.sox_available?
+        assert_includes [true, false], result
       end
 
       test "chunked_command includes AAC args when recording_path set" do
@@ -112,7 +147,7 @@ module EarlScribe
 
       test "start_streaming yields data chunks and stops" do
         capture = EarlScribe::Audio::Capture.new(device_index: 0)
-        mock_io = StringIO.new("chunk1chunk2")
+        mock_io = StringIO.new([0.1, 0.2, 0.3].pack("e*"))
         mock_io.define_singleton_method(:pid) { 99_999 }
 
         received = []
@@ -204,6 +239,33 @@ module EarlScribe
         end
       end
 
+      test "start_chunked skips already-yielded files in final yield" do
+        Dir.mktmpdir("capture_test") do |tmp_dir|
+          capture = EarlScribe::Audio::Capture.new(device_index: 0)
+
+          wav1 = File.join(tmp_dir, "20260302_100000.wav")
+          File.write(wav1, "audio data")
+
+          mock_io = Object.new
+          mock_io.define_singleton_method(:pid) { 99_999 }
+          mock_io.define_singleton_method(:close) { nil }
+
+          # Pre-mark wav1 as already yielded during poll_for_chunks
+          capture.define_singleton_method(:poll_for_chunks) do |_dir|
+            @yielded = Set.new([wav1])
+          end
+
+          yielded = []
+          IO.stub(:popen, mock_io) do
+            Process.stub(:kill, ->(*_args) {}) do
+              capture.start_chunked(tmp_dir) { |path| yielded << path }
+            end
+          end
+
+          assert_empty yielded
+        end
+      end
+
       test "start_chunked skips zero-byte files in final yield" do
         Dir.mktmpdir("capture_test") do |tmp_dir|
           capture = EarlScribe::Audio::Capture.new(device_index: 0)
@@ -225,6 +287,31 @@ module EarlScribe
           end
 
           assert_empty yielded
+        end
+      end
+
+      test "poll_for_chunks skips zero-byte files in completed chunks" do
+        Dir.mktmpdir("capture_test") do |tmp_dir|
+          capture = EarlScribe::Audio::Capture.new(device_index: 0)
+          capture.instance_variable_set(:@yielded, Set.new)
+
+          wav1 = File.join(tmp_dir, "20260302_100000.wav")
+          wav2 = File.join(tmp_dir, "20260302_100010.wav")
+          wav3 = File.join(tmp_dir, "20260302_100020.wav")
+          File.write(wav1, "")          # zero-byte, should skip
+          File.write(wav2, "audio")     # has content, should yield
+          File.write(wav3, "in progress")
+
+          yielded = []
+          capture.define_singleton_method(:sleep) { |_s| raise StopIteration }
+
+          begin
+            capture.send(:poll_for_chunks, tmp_dir) { |path| yielded << path }
+          rescue StopIteration
+            nil
+          end
+
+          assert_equal [wav2], yielded
         end
       end
 
