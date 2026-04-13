@@ -378,6 +378,7 @@ module EarlScribe
 
         mono_capture = Object.new
         mono_capture.define_singleton_method(:channels) { 1 }
+        mono_capture.define_singleton_method(:sample_rate) { 48_000 }
         mono_capture.define_singleton_method(:start_streaming) { |&_block| nil }
 
         EarlScribe::Audio::Device.stub(:resolve, device) do
@@ -412,6 +413,7 @@ module EarlScribe
 
         interrupt_capture = Object.new
         interrupt_capture.define_singleton_method(:channels) { 2 }
+        interrupt_capture.define_singleton_method(:sample_rate) { 48_000 }
         interrupt_capture.define_singleton_method(:start_streaming) { |&_block| raise Interrupt }
 
         EarlScribe::Audio::Device.stub(:resolve, device) do
@@ -444,6 +446,7 @@ module EarlScribe
 
         interrupt_capture = Object.new
         interrupt_capture.define_singleton_method(:channels) { 2 }
+        interrupt_capture.define_singleton_method(:sample_rate) { 48_000 }
         interrupt_capture.define_singleton_method(:start_streaming) { |&_block| raise Interrupt }
 
         EarlScribe::Audio::Device.stub(:resolve, device) do
@@ -476,6 +479,7 @@ module EarlScribe
 
         interrupt_capture = Object.new
         interrupt_capture.define_singleton_method(:channels) { 2 }
+        interrupt_capture.define_singleton_method(:sample_rate) { 48_000 }
         interrupt_capture.define_singleton_method(:start_streaming) { |&_block| raise Interrupt }
 
         EarlScribe::Audio::Device.stub(:resolve, device) do
@@ -507,6 +511,7 @@ module EarlScribe
 
         interrupt_capture = Object.new
         interrupt_capture.define_singleton_method(:channels) { 2 }
+        interrupt_capture.define_singleton_method(:sample_rate) { 48_000 }
         interrupt_capture.define_singleton_method(:start_streaming) { |&_block| raise Interrupt }
 
         EarlScribe::Audio::Device.stub(:resolve, device) do
@@ -826,6 +831,7 @@ module EarlScribe
       def build_mock_capture
         capture = Object.new
         capture.define_singleton_method(:channels) { 2 }
+        capture.define_singleton_method(:sample_rate) { 48_000 }
         capture.define_singleton_method(:start_streaming) { |&_block| nil }
         capture
       end
@@ -854,6 +860,7 @@ module EarlScribe
       def build_mock_streaming_capture(data)
         capture = Object.new
         capture.define_singleton_method(:channels) { 2 }
+        capture.define_singleton_method(:sample_rate) { 48_000 }
         capture.define_singleton_method(:start_streaming) do |&block|
           block.call(data)
         end

@@ -20,9 +20,9 @@ module EarlScribe
         assert_equal 1, client.channels
       end
 
-      test "default sample rate is 16000" do
+      test "default sample rate is 48000" do
         client = EarlScribe::Transcription::Deepgram.new(api_key: "key")
-        assert_equal 16_000, client.sample_rate
+        assert_equal 48_000, client.sample_rate
       end
 
       test "websocket_url includes api params" do
@@ -33,7 +33,7 @@ module EarlScribe
         assert_includes url, "model=nova-3"
         assert_includes url, "diarize=true"
         assert_includes url, "encoding=linear16"
-        assert_includes url, "sample_rate=16000"
+        assert_includes url, "sample_rate=48000"
         assert_includes url, "channels=2"
         assert_includes url, "multichannel=true"
       end

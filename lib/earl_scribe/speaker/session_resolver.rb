@@ -17,11 +17,11 @@ module EarlScribe
 
       attr_reader :pcm_buffer
 
-      def self.build(channels:, identify:, threshold: nil, &on_speaker_identified)
+      def self.build(channels:, identify:, sample_rate: 48_000, threshold: nil, &on_speaker_identified)
         return nil unless identify && Encoder.available?
 
         encoder = Encoder.start_server
-        new(pcm_buffer: Audio::PcmBuffer.new(sample_rate: 16_000, channels: channels),
+        new(pcm_buffer: Audio::PcmBuffer.new(sample_rate: sample_rate, channels: channels),
             identifier: Identifier.new(store: Store.new, threshold: threshold),
             tmp_dir: Dir.mktmpdir("earl-scribe"), encoder: encoder, &on_speaker_identified)
       rescue StandardError

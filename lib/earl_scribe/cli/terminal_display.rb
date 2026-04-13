@@ -23,8 +23,8 @@ module EarlScribe
       # Accumulates segments by speaker. Returns a flushed Result when the speaker changes, nil otherwise.
       def accumulate(seg, cache_key:)
         synchronize do
-          same = @pending && @pending[:cache_key] == cache_key && @pending[:speaker] == seg.speaker
-          same ? append_segment(seg) : start_segment(seg, cache_key)
+          same_speaker = @pending && @pending[:speaker] == seg.speaker
+          same_speaker ? append_segment(seg, cache_key) : start_segment(seg, cache_key)
         end
       end
 
@@ -55,9 +55,10 @@ module EarlScribe
 
       private
 
-      def append_segment(seg)
+      def append_segment(seg, cache_key)
         @pending[:text] << " " << seg.text
         @pending[:end_time] = seg.end_time
+        @pending[:cache_key] = cache_key
         output.print(" #{seg.text}")
         output.flush
         nil

@@ -203,14 +203,16 @@ module EarlScribe
         assert_includes lines.first.text, "Speaker 0: Hello"
       end
 
-      test "accumulate flushes on different cache_key same speaker name" do
+      test "accumulate merges segments with same speaker name but different cache_key" do
         seg1 = build_seg(speaker: "Speaker 0", text: "Hello", start_time: 0.0, channel: 0)
         seg2 = build_seg(speaker: "Speaker 0", text: "Hi", start_time: 1.0, channel: 1)
 
         @display.accumulate(seg1, cache_key: "Ch0 0")
         flushed = @display.accumulate(seg2, cache_key: "Ch1 0")
 
-        assert_equal "Hello", flushed.text
+        assert_nil flushed
+        result = @display.flush
+        assert_equal "Hello Hi", result.text
       end
 
       test "reprint_speaker updates pending speaker name" do

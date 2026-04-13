@@ -23,7 +23,7 @@ module EarlScribe
       def self.parse_options(argv)
         val = ->(flag) { (i = argv.index(flag)) && argv[i + 1] }
         opts = { device: val["--device"] || Config.audio_device, threshold: val["--threshold"]&.to_f,
-                 local: false, mono: false, identify: true, record: false }
+                 title: val["--title"], local: false, mono: false, identify: true, record: false }
         argv.each { |flag| (kv = FLAG_MAP[flag]) && (opts[kv[0]] = kv[1]) }
         opts
       end
@@ -34,22 +34,27 @@ module EarlScribe
         ctx.term_display = TerminalDisplay.new
         resolver = build_resolver(ctx, opts)
         mode = opts[:mono] ? "mono + diarize" : "stereo (L=Meeting, R=Mic) + diarize"
+        title = opts[:title] || ctx.meeting&.dig(:title)
         TranscribeBanner.print(device, engine: "Deepgram Nova-3", mode: mode,
                                        id_status: resolver ? "enabled" : "disabled",
-                                       session: TranscribeSession.session_info(ctx))
+                                       session: TranscribeSession.session_info(ctx, meeting_title: title))
         stream_deepgram(api_key, ctx, resolver)
       end
 
       def self.build_resolver(ctx, opts)
+        capture = ctx.capture
         Speaker::SessionResolver.build(
-          channels: ctx.capture.channels, identify: opts[:identify], threshold: opts[:threshold]
+          channels: capture.channels, sample_rate: capture.sample_rate,
+          identify: opts[:identify], threshold: opts[:threshold]
         ) { |ck, old_n, new_n| ctx.term_display.reprint_speaker(ck, old_n, new_n) }
       end
 
       def self.stream_deepgram(api_key, ctx, resolver)
-        client = Transcription::Deepgram.new(api_key: api_key, channels: ctx.capture.channels)
+        capture = ctx.capture
+        client = Transcription::Deepgram.new(api_key: api_key, channels: capture.channels,
+                                             sample_rate: capture.sample_rate)
         client.connect(->(result) { handle_result(result, resolver, ctx) })
-        ctx.capture.start_streaming do |data|
+        capture.start_streaming do |data|
           client.send_audio(data)
           resolver&.pcm_buffer&.append(data)
         end
@@ -69,7 +74,7 @@ module EarlScribe
 
       def self.write_segment(ctx, seg, cache_key)
         flushed = ctx.term_display.accumulate(seg, cache_key: cache_key)
-        ctx.writer.write_line(flushed.to_s) if flushed
+        ctx.writer.write_line(flushed.to_timestamped_s) if flushed
         ctx.jsonl.write_segment(seg)
       end
 
@@ -77,7 +82,10 @@ module EarlScribe
         return unless (match = resolver && seg.speaker&.match(SPEAKER_RE))
 
         cache_key = "#{match[1]}#{match[2]}"
-        (name = resolver.resolve_label(cache_key, words, channel: seg.channel)) && (seg.speaker = name)
+        if (name = resolver.resolve_label(cache_key, words, channel: seg.channel))
+          seg.original_speaker = seg.speaker
+          seg.speaker = name
+        end
         cache_key
       end
 
@@ -93,8 +101,9 @@ module EarlScribe
         abort "whisper.cpp not available. Set WHISPER_CPP_PATH and WHISPER_MODELS_DIR." unless whisper.available?
         id_ok = opts[:identify] && Speaker::Encoder.available?
         ctx = TranscribeSession.build(device, opts)
+        title = opts[:title] || ctx.meeting&.dig(:title)
         TranscribeBanner.print(device, engine: "whisper.cpp", mode: "local", id_status: id_ok ? "enabled" : "disabled",
-                                       session: TranscribeSession.session_info(ctx))
+                                       session: TranscribeSession.session_info(ctx, meeting_title: title))
         identifier = Speaker::Identifier.new(store: Speaker::Store.new, threshold: opts[:threshold]) if id_ok
         run_chunked(ctx, whisper, identifier)
       end
@@ -118,7 +127,7 @@ module EarlScribe
         label = identifier&.identify(Speaker::Encoder.encode(wav_path))&.first
         seg = Transcription::Result.new(speaker: label, text: text, start_time: elapsed, channel: 0)
         puts seg.to_timestamped_s
-        ctx.writer.write_line(seg.to_s)
+        ctx.writer.write_line(seg.to_timestamped_s)
         ctx.jsonl.write_segment(seg)
         elapsed + Config.audio_chunk_seconds
       ensure
