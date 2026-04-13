@@ -256,10 +256,16 @@ module EarlScribe
       end
 
       test "build returns resolver when identify true and encoder available" do
+        mock_server = Object.new
+        mock_server.define_singleton_method(:shutdown) { nil }
+        mock_server.define_singleton_method(:is_a?) { |klass| klass == Encoder::PersistentProcess }
+
         Encoder.stub(:available?, true) do
-          resolver = SessionResolver.build(channels: 2, identify: true)
-          assert_instance_of SessionResolver, resolver
-          resolver.shutdown
+          Encoder.stub(:start_server, mock_server) do
+            resolver = SessionResolver.build(channels: 2, identify: true)
+            assert_instance_of SessionResolver, resolver
+            resolver.shutdown
+          end
         end
       end
 
