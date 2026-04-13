@@ -185,164 +185,59 @@ module EarlScribe
         end
       end
 
-      test "start_chunked yields completed wav paths via final chunk" do
-        Dir.mktmpdir("capture_test") do |tmp_dir|
-          capture = EarlScribe::Audio::Capture.new(device_index: 0)
+      test "start_chunked delegates to ChunkPoller" do
+        capture = EarlScribe::Audio::Capture.new(device_index: 0)
+        mock_io = build_mock_chunked_io
+        poll_called = false
+        final_called = false
+        mock_poller = build_mock_poller(
+          on_poll: -> { poll_called = true },
+          on_final: -> { final_called = true }
+        )
 
-          wav1 = File.join(tmp_dir, "20260302_100000.wav")
-          wav2 = File.join(tmp_dir, "20260302_100010.wav")
-          File.write(wav1, "fake audio 1")
-          File.write(wav2, "fake audio 2")
-
-          mock_io = Object.new
-          mock_io.define_singleton_method(:pid) { 99_999 }
-          mock_io.define_singleton_method(:close) { nil }
-
-          yielded = []
-
-          # Return immediately so ensure block yields final chunks
-          capture.define_singleton_method(:poll_for_chunks) { |_dir| nil }
-
+        EarlScribe::Audio::ChunkPoller.stub(:new, mock_poller) do
           IO.stub(:popen, mock_io) do
             Process.stub(:kill, ->(*_args) {}) do
-              capture.start_chunked(tmp_dir) { |path| yielded << path }
+              capture.start_chunked("/tmp/ignored") { |_path| nil }
             end
           end
-
-          assert_includes yielded, wav1
-          assert_includes yielded, wav2
         end
+
+        assert poll_called, "Expected ChunkPoller#poll to be called"
+        assert final_called, "Expected yield_final_chunk to be called"
       end
 
       test "start_chunked stops ffmpeg on completion" do
-        Dir.mktmpdir("capture_test") do |tmp_dir|
-          capture = EarlScribe::Audio::Capture.new(device_index: 0)
+        capture = EarlScribe::Audio::Capture.new(device_index: 0)
+        mock_io = build_mock_chunked_io
+        mock_poller = build_mock_poller
 
-          mock_io = Object.new
-          mock_io.define_singleton_method(:pid) { 99_999 }
-          mock_io.define_singleton_method(:close) { nil }
-
-          killed = false
-          kill_proc = lambda { |*_args|
-            killed = true
-          }
-
-          capture.define_singleton_method(:poll_for_chunks) { |_dir| nil }
-
+        killed = false
+        EarlScribe::Audio::ChunkPoller.stub(:new, mock_poller) do
           IO.stub(:popen, mock_io) do
-            Process.stub(:kill, kill_proc) do
-              capture.start_chunked(tmp_dir) { |_path| nil }
+            Process.stub(:kill, ->(*_args) { killed = true }) do
+              capture.start_chunked("/tmp/ignored") { |_path| nil }
             end
           end
-
-          assert killed, "Expected ffmpeg process to be killed"
         end
+
+        assert killed, "Expected ffmpeg process to be killed"
       end
 
-      test "start_chunked skips already-yielded files in final yield" do
-        Dir.mktmpdir("capture_test") do |tmp_dir|
-          capture = EarlScribe::Audio::Capture.new(device_index: 0)
+      private
 
-          wav1 = File.join(tmp_dir, "20260302_100000.wav")
-          File.write(wav1, "audio data")
-
-          mock_io = Object.new
-          mock_io.define_singleton_method(:pid) { 99_999 }
-          mock_io.define_singleton_method(:close) { nil }
-
-          # Pre-mark wav1 as already yielded during poll_for_chunks
-          capture.define_singleton_method(:poll_for_chunks) do |_dir|
-            @yielded = Set.new([wav1])
-          end
-
-          yielded = []
-          IO.stub(:popen, mock_io) do
-            Process.stub(:kill, ->(*_args) {}) do
-              capture.start_chunked(tmp_dir) { |path| yielded << path }
-            end
-          end
-
-          assert_empty yielded
-        end
+      def build_mock_chunked_io
+        io = Object.new
+        io.define_singleton_method(:pid) { 99_999 }
+        io.define_singleton_method(:close) { nil }
+        io
       end
 
-      test "start_chunked skips zero-byte files in final yield" do
-        Dir.mktmpdir("capture_test") do |tmp_dir|
-          capture = EarlScribe::Audio::Capture.new(device_index: 0)
-
-          empty_wav = File.join(tmp_dir, "20260302_100000.wav")
-          File.write(empty_wav, "")
-
-          mock_io = Object.new
-          mock_io.define_singleton_method(:pid) { 99_999 }
-          mock_io.define_singleton_method(:close) { nil }
-
-          capture.define_singleton_method(:poll_for_chunks) { |_dir| nil }
-
-          yielded = []
-          IO.stub(:popen, mock_io) do
-            Process.stub(:kill, ->(*_args) {}) do
-              capture.start_chunked(tmp_dir) { |path| yielded << path }
-            end
-          end
-
-          assert_empty yielded
-        end
-      end
-
-      test "poll_for_chunks skips zero-byte files in completed chunks" do
-        Dir.mktmpdir("capture_test") do |tmp_dir|
-          capture = EarlScribe::Audio::Capture.new(device_index: 0)
-          capture.instance_variable_set(:@yielded, Set.new)
-
-          wav1 = File.join(tmp_dir, "20260302_100000.wav")
-          wav2 = File.join(tmp_dir, "20260302_100010.wav")
-          wav3 = File.join(tmp_dir, "20260302_100020.wav")
-          File.write(wav1, "")          # zero-byte, should skip
-          File.write(wav2, "audio")     # has content, should yield
-          File.write(wav3, "in progress")
-
-          yielded = []
-          capture.define_singleton_method(:sleep) { |_s| raise StopIteration }
-
-          begin
-            capture.send(:poll_for_chunks, tmp_dir) { |path| yielded << path }
-          rescue StopIteration
-            nil
-          end
-
-          assert_equal [wav2], yielded
-        end
-      end
-
-      test "poll_for_chunks yields previous file when new one appears" do
-        Dir.mktmpdir("capture_test") do |tmp_dir|
-          capture = EarlScribe::Audio::Capture.new(device_index: 0)
-          capture.instance_variable_set(:@yielded, Set.new)
-
-          wav1 = File.join(tmp_dir, "20260302_100000.wav")
-          wav2 = File.join(tmp_dir, "20260302_100010.wav")
-          File.write(wav1, "audio 1")
-          File.write(wav2, "audio 2")
-
-          yielded = []
-          call_count = 0
-
-          # Run two iterations so the duplicate-skip branch is exercised
-          capture.define_singleton_method(:sleep) do |_s|
-            call_count += 1
-            raise StopIteration if call_count >= 2
-          end
-
-          begin
-            capture.send(:poll_for_chunks, tmp_dir) { |path| yielded << path }
-          rescue StopIteration
-            nil
-          end
-
-          # wav1 yielded once (second iteration skips it as duplicate)
-          assert_equal [wav1], yielded
-        end
+      def build_mock_poller(on_poll: -> {}, on_final: -> {})
+        poller = Object.new
+        poller.define_singleton_method(:poll) { |&_block| on_poll.call }
+        poller.define_singleton_method(:yield_final_chunk) { |&_block| on_final.call }
+        poller
       end
     end
   end

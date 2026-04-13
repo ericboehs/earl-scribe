@@ -1,9 +1,8 @@
 # frozen_string_literal: true
 
-require "tmpdir"
-require "fileutils"
 require_relative "transcribe_banner"
 require_relative "transcribe_session"
+require_relative "transcribe_local"
 require_relative "terminal_display"
 require_relative "learn_rewriter"
 
@@ -17,7 +16,8 @@ module EarlScribe
 
       def self.run(argv)
         opts = parse_options(argv)
-        send(opts[:local] ? :run_local : :run_deepgram, Audio::Device.resolve(opts[:device]), opts)
+        device = Audio::Device.resolve(opts[:device])
+        opts[:local] ? TranscribeLocal.run(device, opts) : run_deepgram(device, opts)
       end
 
       def self.parse_options(argv)
@@ -54,14 +54,16 @@ module EarlScribe
         client = Transcription::Deepgram.new(api_key: api_key, channels: capture.channels,
                                              sample_rate: capture.sample_rate)
         client.connect(->(result) { handle_result(result, resolver, ctx) })
-        capture.start_streaming do |data|
-          client.send_audio(data)
-          resolver&.pcm_buffer&.append(data)
-        end
+        capture.start_streaming { |data| forward_chunk(client, resolver, data) }
       rescue Interrupt
         client.close
         correct_files(ctx, resolver&.shutdown)
         TranscribeSession.close_writers(ctx)
+      end
+
+      def self.forward_chunk(client, resolver, data)
+        client.send_audio(data)
+        resolver&.pcm_buffer&.append(data)
       end
 
       def self.handle_result(result, resolver, ctx)
@@ -96,46 +98,8 @@ module EarlScribe
                               map.transform_keys { |k| (m = k.match(SPEAKER_RE)) ? "#{m[1]}Speaker #{m[2]}" : k })
       end
 
-      def self.run_local(device, opts)
-        whisper = Transcription::Whisper.new
-        abort "whisper.cpp not available. Set WHISPER_CPP_PATH and WHISPER_MODELS_DIR." unless whisper.available?
-        id_ok = opts[:identify] && Speaker::Encoder.available?
-        ctx = TranscribeSession.build(device, opts)
-        title = opts[:title] || ctx.meeting&.dig(:title)
-        TranscribeBanner.print(device, engine: "whisper.cpp", mode: "local", id_status: id_ok ? "enabled" : "disabled",
-                                       session: TranscribeSession.session_info(ctx, meeting_title: title))
-        identifier = Speaker::Identifier.new(store: Speaker::Store.new, threshold: opts[:threshold]) if id_ok
-        run_chunked(ctx, whisper, identifier)
-      end
-
-      def self.run_chunked(ctx, whisper, identifier)
-        elapsed = 0.0
-        Dir.mktmpdir("earl-scribe") do |tmp_dir|
-          ctx.capture.start_chunked(tmp_dir, chunk_seconds: Config.audio_chunk_seconds) do |wav_path|
-            elapsed = process_chunk(wav_path, whisper, identifier, ctx, elapsed)
-          end
-        end
-      rescue Interrupt
-        nil
-      ensure
-        TranscribeSession.close_writers(ctx)
-      end
-
-      def self.process_chunk(wav_path, whisper, identifier, ctx, elapsed)
-        return elapsed unless (text = whisper.transcribe(wav_path))
-
-        label = identifier&.identify(Speaker::Encoder.encode(wav_path))&.first
-        seg = Transcription::Result.new(speaker: label, text: text, start_time: elapsed, channel: 0)
-        puts seg.to_timestamped_s
-        ctx.writer.write_line(seg.to_timestamped_s)
-        ctx.jsonl.write_segment(seg)
-        elapsed + Config.audio_chunk_seconds
-      ensure
-        FileUtils.rm_f(wav_path)
-      end
-
-      private_class_method(*%i[parse_options run_deepgram build_resolver stream_deepgram handle_result
-                               write_segment resolve_speaker correct_files run_local run_chunked process_chunk])
+      private_class_method(*%i[parse_options run_deepgram build_resolver stream_deepgram forward_chunk
+                               handle_result write_segment resolve_speaker correct_files])
     end
   end
 end

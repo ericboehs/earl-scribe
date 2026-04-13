@@ -1,10 +1,8 @@
 # frozen_string_literal: true
 
-require "set"
-
 module EarlScribe
   module Audio
-    # FFmpeg subprocess for live audio capture
+    # Audio capture subprocess — uses sox/CoreAudio on macOS when available, falls back to ffmpeg/AVFoundation.
     class Capture
       attr_reader :device_index, :device_name, :channels, :sample_rate, :recording_path
 
@@ -22,7 +20,9 @@ module EarlScribe
       end
 
       def sox_available?
-        defined?(@sox_available) ? @sox_available : (@sox_available = system("which", "sox", out: File::NULL, err: File::NULL))
+        return @sox_available if defined?(@sox_available)
+
+        @sox_available = system("which", "sox", out: File::NULL, err: File::NULL)
       end
 
       def chunked_command(output_dir, chunk_seconds: 10)
@@ -38,14 +38,14 @@ module EarlScribe
 
       def start_streaming(&block)
         @process = IO.popen(streaming_command, "rb", err: File::NULL)
-        encoder = open_encoder
-        encoder_queue = encoder ? start_encoder_thread(encoder) : nil
+        encoder = build_recording_encoder
+        encoder&.start
         read_loop do |data|
-          encoder_queue&.push(data)
+          encoder&.push(data)
           block.call(f32le_to_s16le(data))
         end
       ensure
-        stop_encoder_thread(encoder_queue, encoder)
+        encoder&.stop
         stop
       end
 
@@ -53,11 +53,11 @@ module EarlScribe
         cmd = chunked_command(output_dir, chunk_seconds: chunk_seconds)
         # nosemgrep: ruby.lang.security.dangerous-exec.dangerous-exec
         @process = IO.popen(cmd, err: File::NULL)
-        @yielded = Set.new
-        poll_for_chunks(output_dir, &block)
+        @poller = ChunkPoller.new(output_dir)
+        @poller.poll(&block)
       ensure
         stop
-        yield_final_chunk(output_dir, &block)
+        @poller&.yield_final_chunk(&block)
       end
 
       def stop
@@ -91,34 +91,10 @@ module EarlScribe
         ["-c:a", "aac", "-b:a", "64k", recording_path]
       end
 
-      def open_encoder
+      def build_recording_encoder
         return unless recording_path
 
-        # nosemgrep: ruby.lang.security.dangerous-exec.dangerous-exec
-        IO.popen(["ffmpeg", "-f", "f32le", "-ac", channels.to_s, "-ar", sample_rate.to_s,
-                  "-i", "pipe:0", "-c:a", "aac", "-b:a", "64k", recording_path], "wb", err: File::NULL)
-      end
-
-      def start_encoder_thread(encoder)
-        queue = Thread::Queue.new
-        @encoder_thread = Thread.new { drain_encoder_queue(queue, encoder) }
-        queue
-      end
-
-      def drain_encoder_queue(queue, encoder)
-        while (chunk = queue.pop)
-          encoder.write(chunk)
-        end
-        encoder.close
-      rescue IOError => error
-        EarlScribe.logger.warn("Recording may be incomplete: #{error.message}")
-      end
-
-      def stop_encoder_thread(queue, _encoder)
-        return unless queue
-
-        queue.close
-        @encoder_thread&.join(5)
+        RecordingEncoder.new(path: recording_path, channels: channels, sample_rate: sample_rate)
       end
 
       def f32le_to_s16le(data)
@@ -131,32 +107,6 @@ module EarlScribe
           break if data.empty?
 
           yield data
-        end
-      end
-
-      def poll_for_chunks(output_dir, &block)
-        loop do
-          yield_completed_chunks(output_dir, &block)
-          sleep 0.5
-        end
-      end
-
-      def yield_completed_chunks(output_dir)
-        wavs = Dir.glob(File.join(output_dir, "*.wav")).sort
-        wavs[0...-1].each do |path|
-          next if @yielded.include?(path)
-          next unless File.size?(path)
-
-          @yielded.add(path)
-          yield path
-        end
-      end
-
-      def yield_final_chunk(output_dir)
-        Dir.glob(File.join(output_dir, "*.wav")).sort.each do |path|
-          next if @yielded&.include?(path)
-
-          yield path if File.size?(path)
         end
       end
     end
