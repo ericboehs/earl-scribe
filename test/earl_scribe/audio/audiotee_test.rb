@@ -82,6 +82,11 @@ module EarlScribe
         capture = EarlScribe::Audio::AudioTee.new
         assert_nothing_raised { capture.stop }
       end
+
+      test "initialize raises on invalid channels" do
+        assert_raises(ArgumentError) { EarlScribe::Audio::AudioTee.new(channels: 0) }
+        assert_raises(ArgumentError) { EarlScribe::Audio::AudioTee.new(channels: 3) }
+      end
     end
   end
 end

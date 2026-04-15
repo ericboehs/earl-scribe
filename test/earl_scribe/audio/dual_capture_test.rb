@@ -136,6 +136,11 @@ module EarlScribe
         assert_equal 16_000, capture.sample_rate
         assert_equal "/tmp/r.m4a", capture.recording_path
       end
+
+      test "initialize raises on invalid channels" do
+        assert_raises(ArgumentError) { EarlScribe::Audio::DualCapture.new(channels: 0) }
+        assert_raises(ArgumentError) { EarlScribe::Audio::DualCapture.new(channels: 3) }
+      end
     end
   end
 end

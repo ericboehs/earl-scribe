@@ -5,9 +5,13 @@ module EarlScribe
     # Captures system audio via the audiotee CLI (Core Audio Taps API, macOS 14.2+).
     # Quacks like Audio::Capture but bypasses device selection entirely.
     class AudioTee
+      VALID_CHANNELS = [1, 2].freeze
+
       attr_reader :channels, :sample_rate, :recording_path
 
       def initialize(channels: 1, sample_rate: 48_000, recording_path: nil)
+        raise ArgumentError, "channels must be 1 or 2, got #{channels}" unless VALID_CHANNELS.include?(channels)
+
         @channels = channels
         @sample_rate = sample_rate
         @recording_path = recording_path

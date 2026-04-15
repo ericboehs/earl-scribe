@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "transcribe_banner"
+require_relative "transcribe_flags"
 require_relative "transcribe_mode"
 require_relative "transcribe_session"
 require_relative "transcribe_local"
@@ -11,13 +12,10 @@ module EarlScribe
   module Cli
     # Starts a live transcription session via Deepgram or local whisper.cpp
     module Transcribe
-      FLAG_MAP = { "--local" => [:local, true], "--stereo" => [:stereo, true],
-                   "--no-identify" => [:identify, false], "--record" => [:record, true],
-                   "--no-mic" => [:no_mic, true] }.freeze
       SPEAKER_RE = /\A((?:Ch\d+ )?)Speaker (\d+)\z/.freeze
 
       def self.run(argv)
-        opts = parse_options(argv)
+        opts = TranscribeFlags.parse(argv)
         device = resolve_device(opts)
         opts[:local] ? TranscribeLocal.run(device, opts) : run_deepgram(device, opts)
       end
@@ -26,20 +24,6 @@ module EarlScribe
         return nil unless TranscribeMode.device_mode?(opts)
 
         Audio::Device.resolve(TranscribeMode.resolve_device_name(opts))
-      end
-
-      def self.parse_options(argv)
-        val = ->(flag) { (i = argv.index(flag)) && argv[i + 1] }
-        opts = default_options(val)
-        argv.each { |flag| (kv = FLAG_MAP[flag]) && (opts[kv[0]] = kv[1]) }
-        opts
-      end
-
-      def self.default_options(val)
-        { device: val["--device"] || (Config.audio_device_explicit? ? Config.audio_device : nil),
-          mic: val["--mic"] || Config.audio_mic,
-          threshold: val["--threshold"]&.to_f, title: val["--title"],
-          local: false, stereo: false, identify: true, record: false, no_mic: false }
       end
 
       def self.run_deepgram(device, opts)
@@ -117,9 +101,9 @@ module EarlScribe
                               map.transform_keys { |k| (m = k.match(SPEAKER_RE)) ? "#{m[1]}Speaker #{m[2]}" : k })
       end
 
-      private_class_method(*%i[parse_options default_options resolve_device run_deepgram
-                               print_banner build_resolver stream_deepgram forward_chunk
-                               handle_result write_segment resolve_speaker correct_files])
+      private_class_method(*%i[resolve_device run_deepgram print_banner build_resolver
+                               stream_deepgram forward_chunk handle_result write_segment
+                               resolve_speaker correct_files])
     end
   end
 end

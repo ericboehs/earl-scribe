@@ -8,10 +8,13 @@ module EarlScribe
     class DualCapture
       BYTES_PER_SAMPLE = 2
       CHUNK_FRAMES = 960 # 20ms @ 48kHz
+      VALID_CHANNELS = [1, 2].freeze
 
       attr_reader :channels, :sample_rate, :recording_path, :mic_device
 
       def initialize(mic_device: "default", channels: 1, sample_rate: 48_000, recording_path: nil)
+        raise ArgumentError, "channels must be 1 or 2, got #{channels}" unless VALID_CHANNELS.include?(channels)
+
         @mic_device = mic_device
         @channels = channels
         @sample_rate = sample_rate

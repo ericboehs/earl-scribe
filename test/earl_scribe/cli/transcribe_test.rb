@@ -28,6 +28,30 @@ module EarlScribe
         whisper.verify
       end
 
+      test "run warns on unknown flags" do
+        EarlScribe::Config.stub(:deepgram_api_key, nil) do
+          _stdout, stderr = capture_io do
+            assert_raises(SystemExit) do
+              EarlScribe::Cli::Transcribe.run(["--mono", "--bogus"])
+            end
+          end
+          assert_includes stderr, "unknown flag"
+          assert_includes stderr, "--mono"
+          assert_includes stderr, "--bogus"
+        end
+      end
+
+      test "run does not warn on value flag arguments" do
+        EarlScribe::Config.stub(:deepgram_api_key, nil) do
+          _stdout, stderr = capture_io do
+            assert_raises(SystemExit) do
+              EarlScribe::Cli::Transcribe.run(["--title", "Daily", "--mic", "TestMic"])
+            end
+          end
+          assert_not_includes stderr, "unknown flag"
+        end
+      end
+
       test "run without --local aborts without api key" do
         device = build_device
         EarlScribe::Audio::Device.stub(:resolve, device) do
