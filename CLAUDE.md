@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**earl-scribe** is a Ruby gem CLI for meeting transcription. It captures audio via FFmpeg, streams to Deepgram Nova-3 for real-time transcription with speaker diarization, or transcribes locally via whisper.cpp. Includes speaker identification via voiceprint matching (Python/resemblyzer).
+**earl-scribe** is a Ruby gem CLI for meeting transcription. Default capture pipeline on macOS 14.2+ combines system audio (via AudioTee / Core Audio Taps) with a hardware mic (via sox/CoreAudio), mixed to mono and streamed to Deepgram Nova-3 for real-time transcription with diarization. Legacy single-device capture via `--device` is preserved. Local whisper.cpp chunked path still exists for offline transcription.
 
 ## Architecture
 
@@ -14,12 +14,17 @@ lib/
     config.rb                            # ENV-based config (DEEPGRAM_API_KEY, etc.)
     cli.rb                               # Dispatcher: transcribe, speakers, devices
     cli/
-      transcribe.rb                      # Deepgram streaming / local whisper.cpp
+      transcribe.rb                      # Deepgram streaming orchestration
+      transcribe_mode.rb                 # Channel count + banner labels per capture mode
+      transcribe_session.rb              # Builds capture + writers; picks DualCapture / AudioTee / Capture
+      transcribe_local.rb                # Whisper.cpp chunked path
       speakers.rb                        # enroll/list/delete/identify/test
       devices.rb                         # List avfoundation audio devices
     audio/
       device.rb                          # Resolve device name -> index via ffmpeg
-      capture.rb                         # FFmpeg audio capture (streaming + chunked)
+      capture.rb                         # Single-device capture (sox/CoreAudio or ffmpeg/AVFoundation)
+      audiotee.rb                        # System-audio-only capture via audiotee CLI
+      dual_capture.rb                    # AudioTee + sox, mono mix or stereo interleave (default)
     transcription/
       deepgram.rb                        # WebSocket client + WebsocketFactory + MessageHandler
       whisper.rb                         # whisper.cpp subprocess wrapper
@@ -40,10 +45,12 @@ exe/
 ## CLI Usage
 
 ```bash
-earl-scribe transcribe                    # Deepgram streaming (default)
-earl-scribe transcribe --local            # Local whisper.cpp
-earl-scribe transcribe --device "Name"    # Specific audio device
-earl-scribe transcribe --mono             # Mono mode
+earl-scribe transcribe                    # Dual capture (AudioTee system + sox mic), mono mix
+earl-scribe transcribe --stereo           # Dual capture, L=system R=mic interleaved
+earl-scribe transcribe --no-mic           # AudioTee system-audio only
+earl-scribe transcribe --mic "Name"       # Override mic device (default: "default")
+earl-scribe transcribe --device "Name"    # Escape hatch: single-device capture
+earl-scribe transcribe --local --device X # Local whisper.cpp (needs --device)
 earl-scribe transcribe --no-identify      # Skip speaker identification
 
 earl-scribe speakers enroll "Name" file.wav [file2.wav ...]
@@ -54,6 +61,14 @@ earl-scribe speakers test file.wav
 
 earl-scribe devices                       # List audio devices
 ```
+
+## Build AudioTee
+
+```
+bin/build-audiotee       # Clones + builds into vendor/audiotee/, prints export path
+```
+
+Then `export EARL_SCRIBE_AUDIOTEE_PATH=...` or put the binary on PATH.
 
 ## Development Commands
 
@@ -82,4 +97,4 @@ This project uses vanilla RuboCop, Reek, and Semgrep with minimal configuration.
 ## Dependencies
 
 - **Runtime**: `websocket-client-simple ~> 0.9`
-- **External**: ffmpeg, whisper.cpp (optional), Python 3 + resemblyzer (optional)
+- **External**: audiotee (built via `bin/build-audiotee`), sox, ffmpeg (for `--record` only), whisper.cpp (optional), Python 3 + resemblyzer (optional)

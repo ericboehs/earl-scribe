@@ -1,32 +1,34 @@
 # earl-scribe
 
-Meeting transcription CLI. Captures audio via FFmpeg and streams to [Deepgram Nova-3](https://deepgram.com/) for real-time transcription with speaker diarization, or transcribes locally via [whisper.cpp](https://github.com/ggerganov/whisper.cpp).
+Meeting transcription CLI. Captures system audio and your microphone, streams to [Deepgram Nova-3](https://deepgram.com/) for real-time transcription with speaker diarization, or transcribes locally via [whisper.cpp](https://github.com/ggerganov/whisper.cpp).
 
 Optionally identifies speakers by name using voiceprint matching via [resemblyzer](https://github.com/resemble-ai/Resemblyzer) (Python).
 
 ## How It Works
 
-**Deepgram mode** (default) captures audio from your Mac's microphone or a virtual audio device, streams raw PCM over a WebSocket to Deepgram's API, and prints transcribed text with speaker labels in real-time.
+The default pipeline on macOS 14.2+:
 
-In **stereo mode** (default), the left channel is the meeting audio (with diarization — Deepgram labels speakers as "Speaker 0", "Speaker 1", etc.) and the right channel is your microphone. In **mono mode**, all audio is mixed and diarized together.
+1. **System audio** (everyone else in the meeting) is captured via [AudioTee](https://github.com/makeusabrew/audiotee), a tiny Swift CLI that wraps Apple's Core Audio Taps API — no kernel extensions or virtual audio drivers (Loopback, BlackHole) required.
+2. **Your microphone** is captured via `sox -t coreaudio <device>`, defaulting to whatever is set in System Settings → Sound → Input.
+3. Both streams are mixed into mono (or interleaved to stereo with `--stereo`) and sent to Deepgram for real-time transcription with diarization.
 
-**Speaker identification** is an optional layer on top: enroll speakers by providing audio samples, and earl-scribe can match Deepgram's anonymous speaker labels to real names using voiceprint cosine similarity.
+Legacy single-device capture via `--device "Loopback Meeting"` (or any CoreAudio device) is still supported as an escape hatch.
 
-**Local mode** uses whisper.cpp for offline transcription (not yet fully implemented in the streaming pipeline).
+**Speaker identification** is an optional layer: enroll speakers from audio samples and earl-scribe matches Deepgram's anonymous `Speaker N` labels to real names using voiceprint cosine similarity.
 
 ## Requirements
 
-- **Ruby** >= 2.6
-- **FFmpeg** (for audio capture and recording) — `brew install ffmpeg`
-- **Deepgram API key** (for streaming mode) — [Get one free](https://console.deepgram.com/signup)
+- **macOS 14.2+** (for AudioTee's Core Audio Taps API)
+- **Ruby** >= 3.0
+- **Swift toolchain** (one-time, for building AudioTee — ships with Xcode or Command Line Tools)
+- **SoX** — `brew install sox`
+- **Deepgram API key** — [Get one free](https://console.deepgram.com/signup)
 
 ### Optional
 
-- **SoX** (recommended on macOS for clean audio capture) — `brew install sox`
-- **whisper.cpp** + model files (for local transcription)
-- **Python 3** + `resemblyzer` (for speaker identification only)
-
-> **Note:** On macOS, sox uses CoreAudio for capture which produces cleaner audio than ffmpeg's AVFoundation driver. If sox is installed, earl-scribe uses it automatically; otherwise it falls back to ffmpeg.
+- **FFmpeg** (only needed if using `--record` to save M4A alongside transcription) — `brew install ffmpeg`
+- **whisper.cpp** + model files (for `--local` offline transcription)
+- **Python 3** + `resemblyzer` (for speaker identification)
 
 ## Installation
 
@@ -34,30 +36,52 @@ In **stereo mode** (default), the left channel is the meeting audio (with diariz
 gem install earl-scribe
 ```
 
-Or add to your Gemfile:
+Or from a Gemfile:
 
 ```ruby
 gem "earl-scribe"
 ```
 
-## Configuration
+### Build AudioTee
 
-Set these environment variables:
+AudioTee is a separate binary that must be built once. From a checkout of earl-scribe:
+
+```bash
+bin/build-audiotee
+```
+
+This clones and builds [makeusabrew/audiotee](https://github.com/makeusabrew/audiotee) into `vendor/audiotee/` and prints the export command to put on PATH:
+
+```bash
+export EARL_SCRIBE_AUDIOTEE_PATH="/path/printed/by/script"
+```
+
+Alternatively, symlink the binary onto your `PATH` (e.g. `ln -s ... /usr/local/bin/audiotee`) and skip the env var.
+
+When you first run earl-scribe, macOS will prompt your terminal for **Microphone** and **System Audio Recording** permissions. Grant both.
+
+## Configuration
 
 ```bash
 # Required for Deepgram streaming
 export DEEPGRAM_API_KEY="your-api-key"
 
-# Optional: default audio device (name or index)
-export AUDIO_DEVICE="Meeting"
+# Optional: audiotee binary location (default: "audiotee" on PATH)
+export EARL_SCRIBE_AUDIOTEE_PATH="/path/to/audiotee"
 
-# Optional: audio sample rate (default 48000)
+# Optional: mic device name for sox (default: "default" — macOS system default input)
+export AUDIO_MIC="Streamer X Main"
+
+# Optional: escape hatch — when set, single-device capture replaces dual capture
+export AUDIO_DEVICE="Loopback Meeting"
+
+# Optional: sample rate (default 48000)
 export AUDIO_SAMPLE_RATE="48000"
 
-# Optional: local whisper.cpp
+# Optional: whisper.cpp for --local mode
 export WHISPER_CPP_PATH="/path/to/whisper-cpp"
 export WHISPER_MODELS_DIR="/path/to/models"
-export WHISPER_MODEL="base.en"  # default
+export WHISPER_MODEL="large-v3"
 ```
 
 ## Usage
@@ -65,25 +89,37 @@ export WHISPER_MODEL="base.en"  # default
 ### Transcribe
 
 ```bash
-# Stream to Deepgram (stereo: L=meeting, R=mic)
+# Default: system audio + default mic, mixed to mono
 earl-scribe transcribe
 
-# Mono mode (single mixed channel)
-earl-scribe transcribe --mono
+# Stereo: L=system, R=mic, per-channel diarization (use headphones to avoid echo)
+earl-scribe transcribe --stereo
+
+# No mic — system audio only (useful when only transcribing remote participants)
+earl-scribe transcribe --no-mic
+
+# Override the mic device
+earl-scribe transcribe --mic "Streamer X Main"
+
+# Legacy single-device capture (Loopback Meeting, USB mixers, etc.)
+earl-scribe transcribe --device "Loopback Meeting"
 
 # Record audio to M4A alongside transcription
 earl-scribe transcribe --record
 
-# Use a specific audio device
-earl-scribe transcribe --device "Meeting"
-earl-scribe transcribe --device 2
-
-# Set a custom meeting title (otherwise auto-detected from calendar)
+# Set a meeting title (otherwise auto-detected from calendar)
 earl-scribe transcribe --title "Team Standup"
 
-# Local whisper.cpp (experimental)
-earl-scribe transcribe --local
+# Local whisper.cpp (requires --device; whisper.cpp path operates on single-device chunks)
+earl-scribe transcribe --local --device "Loopback Meeting"
 ```
+
+### Speaker Diarization Tradeoff
+
+- **Mono mix (default)**: Deepgram's diarization runs on a single mixed stream and often collapses everyone into `Speaker 0` because mic and system audio overlap in the same bitspace.
+- **`--stereo`**: Deepgram runs diarization per channel independently, giving you `Ch0 Speaker 0` (system) vs `Ch1 Speaker 0` (you). Use this when wearing headphones. On speakers, mic echo duplicates remote audio onto the mic channel, causing duplicate transcripts.
+
+If diarization quality matters and you use speakers, the cleanest solve is to use headphones with `--stereo`.
 
 ### List Audio Devices
 
@@ -93,7 +129,7 @@ earl-scribe devices
 
 ### Speaker Identification
 
-Speaker identification requires Python 3 with resemblyzer (`pip install resemblyzer`). It is **not required** for transcription — Deepgram handles diarization natively.
+Optional. Requires Python 3 with resemblyzer (`pip install resemblyzer`).
 
 ```bash
 # Enroll a speaker from audio samples
@@ -112,7 +148,7 @@ earl-scribe speakers test unknown.wav
 earl-scribe speakers delete "Alice"
 ```
 
-Speaker voiceprints are stored as JSON files in `~/.config/earl-scribe/speakers/`.
+Voiceprints are stored as JSON files in `~/.config/earl-scribe/speakers/`.
 
 ## Development
 
@@ -120,18 +156,19 @@ Speaker voiceprints are stored as JSON files in `~/.config/earl-scribe/speakers/
 git clone https://github.com/ericboehs/earl-scribe.git
 cd earl-scribe
 bundle install
+bin/build-audiotee   # one-time
 
-# Run the full CI pipeline
+# Run full CI pipeline (RuboCop, Reek, Bundler audit, Semgrep, Minitest, Coverage)
 bin/ci
 
-# Run tests only
+# Tests only
 bundle exec rake test
 
-# Auto-fix style issues
+# Auto-fix style
 bundle exec rubocop -A
 ```
 
-The CI pipeline runs: RuboCop, Reek, Bundler audit, Semgrep, Minitest (153 tests), and SimpleCov (95% line + branch coverage required).
+Coverage floor: 95% line + branch.
 
 ## License
 
