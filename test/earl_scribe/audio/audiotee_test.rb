@@ -37,11 +37,10 @@ module EarlScribe
       test "start_streaming yields s16le chunks directly without conversion" do
         capture = EarlScribe::Audio::AudioTee.new
         s16_data = [100, -200].pack("s<*")
-        mock_io = StringIO.new(s16_data)
-        mock_io.define_singleton_method(:pid) { 99_999 }
+        stream = build_stream(s16_data)
 
         received = []
-        IO.stub(:popen, mock_io) do
+        EarlScribe::Audio::SubprocessStream.stub(:spawn, stream) do
           capture.start_streaming { |data| received << data }
         end
 
@@ -51,41 +50,53 @@ module EarlScribe
       test "start_streaming tees data to recording encoder when recording_path set" do
         capture = EarlScribe::Audio::AudioTee.new(recording_path: "/tmp/out.m4a")
         s16_data = [100, 200].pack("s<*")
-        mock_io = StringIO.new(s16_data)
-        mock_io.define_singleton_method(:pid) { 99_999 }
-
+        stream = build_stream(s16_data)
         encoder_data = StringIO.new(+"".b)
         encoder_data.define_singleton_method(:pid) { 99_998 }
 
-        received = []
-        IO.stub(:popen, ->(cmd, *_args, **_opts) { cmd.include?("pipe:0") ? encoder_data : mock_io }) do
-          capture.start_streaming { |data| received << data }
+        EarlScribe::Audio::SubprocessStream.stub(:spawn, stream) do
+          IO.stub(:popen, encoder_data) do
+            capture.start_streaming { |_data| nil }
+          end
         end
 
         assert_equal s16_data, encoder_data.string
-        assert_equal s16_data, received.first
       end
 
-      test "stop kills process and handles ESRCH gracefully" do
+      test "start_streaming raises when no audio flows" do
         capture = EarlScribe::Audio::AudioTee.new
-        mock_io = Object.new
-        mock_io.define_singleton_method(:pid) { 99_999 }
-        mock_io.define_singleton_method(:close) { nil }
+        stream = build_stream("", stderr: "permission denied")
 
-        capture.instance_variable_set(:@process, mock_io)
-        Process.stub(:kill, ->(*_args) { raise Errno::ESRCH }) do
-          assert_nothing_raised { capture.stop }
+        EarlScribe::Audio::SubprocessStream.stub(:spawn, stream) do
+          error = assert_raises(EarlScribe::Error) do
+            capture.start_streaming { |_data| nil }
+          end
+          assert_includes error.message, "produced no audio"
+          assert_includes error.message, "permission denied"
         end
       end
 
-      test "stop is a no-op when process nil" do
+      test "stop is idempotent" do
         capture = EarlScribe::Audio::AudioTee.new
+        assert_nothing_raised { capture.stop }
         assert_nothing_raised { capture.stop }
       end
 
       test "initialize raises on invalid channels" do
         assert_raises(ArgumentError) { EarlScribe::Audio::AudioTee.new(channels: 0) }
         assert_raises(ArgumentError) { EarlScribe::Audio::AudioTee.new(channels: 3) }
+      end
+
+      private
+
+      def build_stream(data, stderr: "")
+        io = StringIO.new(data.b)
+        stream = Object.new
+        stream.define_singleton_method(:read) { |n| io.read(n) }
+        stream.define_singleton_method(:stop) { nil }
+        stream.define_singleton_method(:name) { "audiotee" }
+        stream.define_singleton_method(:stderr_tail) { |**_| stderr }
+        stream
       end
     end
   end

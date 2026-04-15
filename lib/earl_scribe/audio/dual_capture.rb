@@ -19,8 +19,8 @@ module EarlScribe
         @channels = channels
         @sample_rate = sample_rate
         @recording_path = recording_path
-        @system_io = nil
-        @mic_io = nil
+        @system = nil
+        @mic = nil
       end
 
       def system_command
@@ -33,45 +33,55 @@ module EarlScribe
       end
 
       def start_streaming(&block)
-        # nosemgrep: ruby.lang.security.dangerous-exec.dangerous-exec
-        @system_io = IO.popen(system_command, "rb", err: File::NULL)
-        # nosemgrep: ruby.lang.security.dangerous-exec.dangerous-exec
-        @mic_io = IO.popen(mic_command, "rb", err: File::NULL)
+        @system = SubprocessStream.spawn(system_command)
+        @mic = SubprocessStream.spawn(mic_command)
         encoder = build_recording_encoder
         encoder&.start
-        pump(encoder, &block)
+        bytes_read, failed = pump(encoder, &block)
+        check_health(bytes_read, failed) if failed
       ensure
         encoder&.stop
         stop
       end
 
       def stop
-        close_io(@system_io)
-        close_io(@mic_io)
-        @system_io = nil
-        @mic_io = nil
+        @system&.stop
+        @mic&.stop
+        @system = nil
+        @mic = nil
       end
 
       private
 
       def pump(encoder, &block)
         chunk_bytes = CHUNK_FRAMES * BYTES_PER_SAMPLE
-        while (sys = read_exact(@system_io, chunk_bytes)) && (mic = read_exact(@mic_io, chunk_bytes))
+        bytes = 0
+        loop do
+          sys = read_exact(@system, chunk_bytes) or return [bytes, :system]
+          mic = read_exact(@mic, chunk_bytes) or return [bytes, :mic]
           chunk = combine(sys, mic)
+          bytes += chunk.bytesize
           encoder&.push(chunk)
           block.call(chunk)
         end
       end
 
-      def read_exact(io, bytes)
+      def read_exact(stream, bytes)
         buf = +"".b
         while buf.bytesize < bytes
-          data = io.read(bytes - buf.bytesize)
+          data = stream.read(bytes - buf.bytesize)
           return nil if data.nil? || data.empty?
 
           buf << data
         end
         buf
+      end
+
+      def check_health(bytes_read, failed)
+        stream = failed == :system ? @system : @mic
+        raise EarlScribe::Error, "#{stream.name} produced no audio. stderr: #{stream.stderr_tail}" if bytes_read.zero?
+
+        EarlScribe.logger.warn("#{stream.name} ended mid-session: #{stream.stderr_tail}")
       end
 
       def combine(sys_bytes, mic_bytes)
@@ -95,15 +105,6 @@ module EarlScribe
 
         RecordingEncoder.new(path: recording_path, channels: channels,
                              sample_rate: sample_rate, input_format: "s16le")
-      end
-
-      def close_io(io)
-        return unless io
-
-        Process.kill("TERM", io.pid)
-        io.close
-      rescue Errno::ESRCH, Errno::EPERM, IOError
-        nil
       end
     end
   end

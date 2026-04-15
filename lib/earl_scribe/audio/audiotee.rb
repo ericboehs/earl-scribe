@@ -15,7 +15,7 @@ module EarlScribe
         @channels = channels
         @sample_rate = sample_rate
         @recording_path = recording_path
-        @process = nil
+        @stream = nil
       end
 
       def streaming_command
@@ -25,45 +25,49 @@ module EarlScribe
       end
 
       def start_streaming(&block)
-        # nosemgrep: ruby.lang.security.dangerous-exec.dangerous-exec
-        @process = IO.popen(streaming_command, "rb", err: File::NULL)
+        @stream = SubprocessStream.spawn(streaming_command)
         encoder = build_recording_encoder
         encoder&.start
-        read_loop do |data|
-          encoder&.push(data)
-          block.call(data)
-        end
+        bytes_read = pump_audio(encoder, &block)
+        check_health(bytes_read)
       ensure
         encoder&.stop
         stop
       end
 
       def stop
-        return unless @process
-
-        Process.kill("TERM", @process.pid)
-        @process.close
-        @process = nil
-      rescue Errno::ESRCH, IOError
-        @process = nil
+        @stream&.stop
+        @stream = nil
       end
 
       private
+
+      def pump_audio(encoder, &block)
+        bytes = 0
+        chunk_size = 16_384
+        while (data = @stream.read(chunk_size))
+          break if data.empty?
+
+          bytes += data.bytesize
+          encoder&.push(data)
+          block.call(data)
+        end
+        bytes
+      end
+
+      def check_health(bytes_read)
+        return if bytes_read.positive?
+
+        raise EarlScribe::Error,
+              "audiotee produced no audio. Check System Settings → Privacy & Security → " \
+              "System Audio Recording. stderr: #{@stream.stderr_tail}"
+      end
 
       def build_recording_encoder
         return unless recording_path
 
         RecordingEncoder.new(path: recording_path, channels: channels,
                              sample_rate: sample_rate, input_format: "s16le")
-      end
-
-      def read_loop
-        chunk_size = 16_384
-        while (data = @process.read(chunk_size))
-          break if data.empty?
-
-          yield data
-        end
       end
     end
   end
