@@ -12,6 +12,7 @@ module EarlScribe
       "AUDIO_DEVICE" => "Meeting",
       "AUDIO_SAMPLE_RATE" => "48000",
       "AUDIO_CHUNK_SECONDS" => "10",
+      "EARL_SCRIBE_AUDIOTEE_PATH" => "audiotee",
       "EARL_SCRIBE_CALENDAR_NAMES" => nil
     }.freeze
 
@@ -45,6 +46,10 @@ module EarlScribe
 
     def self.audio_chunk_seconds
       get("AUDIO_CHUNK_SECONDS").to_i
+    end
+
+    def self.audiotee_path
+      get("EARL_SCRIBE_AUDIOTEE_PATH")
     end
 
     def self.calendar_names

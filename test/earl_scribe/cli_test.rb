@@ -41,9 +41,9 @@ module EarlScribe
     test "passes remaining args to handler" do
       received_args = nil
       EarlScribe::Cli::Transcribe.stub(:run, ->(argv) { received_args = argv }) do
-        EarlScribe::Cli.run(["transcribe", "--mono", "--device", "Test"])
+        EarlScribe::Cli.run(["transcribe", "--stereo", "--device", "Test"])
       end
-      assert_equal ["--mono", "--device", "Test"], received_args
+      assert_equal ["--stereo", "--device", "Test"], received_args
     end
   end
 end

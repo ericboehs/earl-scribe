@@ -10,35 +10,49 @@ module EarlScribe
   module Cli
     # Starts a live transcription session via Deepgram or local whisper.cpp
     module Transcribe
-      FLAG_MAP = { "--local" => [:local, true], "--mono" => [:mono, true],
-                   "--no-identify" => [:identify, false], "--record" => [:record, true] }.freeze
+      FLAG_MAP = { "--local" => [:local, true], "--stereo" => [:stereo, true],
+                   "--no-identify" => [:identify, false], "--record" => [:record, true],
+                   "--system-audio" => [:system_audio, true] }.freeze
       SPEAKER_RE = /\A((?:Ch\d+ )?)Speaker (\d+)\z/.freeze
 
       def self.run(argv)
         opts = parse_options(argv)
-        device = Audio::Device.resolve(opts[:device])
+        device = opts[:system_audio] ? nil : Audio::Device.resolve(opts[:device])
         opts[:local] ? TranscribeLocal.run(device, opts) : run_deepgram(device, opts)
       end
 
       def self.parse_options(argv)
         val = ->(flag) { (i = argv.index(flag)) && argv[i + 1] }
         opts = { device: val["--device"] || Config.audio_device, threshold: val["--threshold"]&.to_f,
-                 title: val["--title"], local: false, mono: false, identify: true, record: false }
+                 title: val["--title"], local: false, stereo: false, identify: true, record: false,
+                 system_audio: false }
         argv.each { |flag| (kv = FLAG_MAP[flag]) && (opts[kv[0]] = kv[1]) }
         opts
       end
 
       def self.run_deepgram(device, opts)
         api_key = Config.deepgram_api_key || abort("DEEPGRAM_API_KEY not set. Get a key at: https://console.deepgram.com/signup")
-        ctx = TranscribeSession.build(device, opts, channels: opts[:mono] ? 1 : 2)
+        channels = resolve_channels(device, opts)
+        ctx = TranscribeSession.build(device, opts, channels: channels)
         ctx.term_display = TerminalDisplay.new
         resolver = build_resolver(ctx, opts)
-        mode = opts[:mono] ? "mono + diarize" : "stereo (L=Meeting, R=Mic) + diarize"
         title = opts[:title] || ctx.meeting&.dig(:title)
-        TranscribeBanner.print(device, engine: "Deepgram Nova-3", mode: mode,
+        TranscribeBanner.print(device, engine: "Deepgram Nova-3", mode: describe_mode(device, channels),
                                        id_status: resolver ? "enabled" : "disabled",
                                        session: TranscribeSession.session_info(ctx, meeting_title: title))
         stream_deepgram(api_key, ctx, resolver)
+      end
+
+      def self.resolve_channels(device, opts)
+        return 1 unless device
+
+        opts[:stereo] ? 2 : 1
+      end
+
+      def self.describe_mode(device, channels)
+        return "system audio (mono)" unless device
+
+        channels == 1 ? "mono + diarize" : "stereo (L=Meeting, R=Mic) + diarize"
       end
 
       def self.build_resolver(ctx, opts)
@@ -98,7 +112,8 @@ module EarlScribe
                               map.transform_keys { |k| (m = k.match(SPEAKER_RE)) ? "#{m[1]}Speaker #{m[2]}" : k })
       end
 
-      private_class_method(*%i[parse_options run_deepgram build_resolver stream_deepgram forward_chunk
+      private_class_method(*%i[parse_options run_deepgram resolve_channels describe_mode
+                               build_resolver stream_deepgram forward_chunk
                                handle_result write_segment resolve_speaker correct_files])
     end
   end

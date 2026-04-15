@@ -19,8 +19,15 @@ module EarlScribe
       end
 
       def self.build_capture(device, channels, recording_path)
+        return build_audiotee_capture(channels, recording_path) unless device
+
         Audio::Capture.new(device_index: device.index, device_name: device.name, channels: channels,
                            sample_rate: Config.audio_sample_rate, recording_path: recording_path)
+      end
+
+      def self.build_audiotee_capture(channels, recording_path)
+        Audio::AudioTee.new(channels: channels, sample_rate: Config.audio_sample_rate,
+                            recording_path: recording_path)
       end
 
       def self.build_jsonl_writer(path, title, meeting)
@@ -57,7 +64,8 @@ module EarlScribe
           transcript: ctx.paths[:transcript], recording: ctx.paths[:recording] }
       end
 
-      private_class_method :build_capture, :build_jsonl_writer, :print_session_summary, :append_path
+      private_class_method :build_capture, :build_audiotee_capture, :build_jsonl_writer,
+                           :print_session_summary, :append_path
     end
   end
 end

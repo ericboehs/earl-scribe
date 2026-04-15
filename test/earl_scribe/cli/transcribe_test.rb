@@ -212,7 +212,33 @@ module EarlScribe
         assert_equal "Meeting", resolved_name
       end
 
-      test "run_deepgram prints stereo banner and starts stream" do
+      test "run_deepgram with --system-audio skips device resolution and uses AudioTee" do
+        client = build_mock_client
+        capture = build_mock_capture
+
+        resolve_called = false
+        EarlScribe::Audio::Device.stub(:resolve, ->(_) { resolve_called = true }) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::AudioTee.stub(:new, capture) do
+                  EarlScribe.stub(:data_dir, @data_dir) do
+                    _stdout, stderr = capture_io do
+                      EarlScribe::Cli::Transcribe.run(["--system-audio"])
+                    end
+                    assert_includes stderr, "System Audio (audiotee)"
+                    assert_includes stderr, "system audio (mono)"
+                  end
+                end
+              end
+            end
+          end
+        end
+
+        assert_not resolve_called, "expected Audio::Device.resolve to be skipped"
+      end
+
+      test "run_deepgram with --stereo prints stereo banner and starts stream" do
         device = build_device
         client = build_mock_client
         capture = build_mock_streaming_capture("data")
@@ -223,7 +249,7 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--stereo"]) }
                     assert_includes stderr, "stereo"
                     assert_includes stderr, "Deepgram Nova-3"
                   end
@@ -234,7 +260,7 @@ module EarlScribe
         end
       end
 
-      test "run_deepgram with --mono prints mono banner" do
+      test "run_deepgram defaults to mono banner" do
         device = build_device
         client = build_mock_client
         capture = build_mock_capture
@@ -245,7 +271,7 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--mono"]) }
+                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
                     assert_includes stderr, "mono"
                   end
                 end
@@ -387,7 +413,7 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, mono_capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    capture_io { EarlScribe::Cli::Transcribe.run(["--mono"]) }
+                    capture_io { EarlScribe::Cli::Transcribe.run([]) }
                   end
                 end
               end

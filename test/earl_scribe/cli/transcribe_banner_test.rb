@@ -59,6 +59,15 @@ module EarlScribe
 
         assert_not_includes stderr, "Transcript:"
       end
+
+      test "shows system audio label when device is nil" do
+        _stdout, stderr = capture_io do
+          TranscribeBanner.print(nil, engine: "Deepgram Nova-3", mode: "system audio (mono)",
+                                      id_status: "disabled")
+        end
+
+        assert_includes stderr, "System Audio (audiotee)"
+      end
     end
   end
 end

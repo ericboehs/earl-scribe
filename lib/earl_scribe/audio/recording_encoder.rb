@@ -6,10 +6,11 @@ module EarlScribe
     # Writes are queued to avoid blocking the capture read loop.
     class RecordingEncoder
       # Output path + audio format settings for the AAC encoder
-      Config = Struct.new(:path, :channels, :sample_rate, keyword_init: true)
+      Config = Struct.new(:path, :channels, :sample_rate, :input_format, keyword_init: true)
 
-      def initialize(path:, channels:, sample_rate:)
-        @config = Config.new(path: path, channels: channels, sample_rate: sample_rate)
+      def initialize(path:, channels:, sample_rate:, input_format: "f32le")
+        @config = Config.new(path: path, channels: channels, sample_rate: sample_rate,
+                             input_format: input_format)
         @encoder = nil
         @queue = nil
         @thread = nil
@@ -17,7 +18,7 @@ module EarlScribe
 
       def start
         # nosemgrep: ruby.lang.security.dangerous-exec.dangerous-exec
-        @encoder = IO.popen(["ffmpeg", "-f", "f32le", "-ac", @config.channels.to_s,
+        @encoder = IO.popen(["ffmpeg", "-f", @config.input_format, "-ac", @config.channels.to_s,
                              "-ar", @config.sample_rate.to_s, "-i", "pipe:0",
                              "-c:a", "aac", "-b:a", "64k", @config.path], "wb", err: File::NULL)
         @queue = Thread::Queue.new
