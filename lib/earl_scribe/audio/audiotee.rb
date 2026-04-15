@@ -46,8 +46,6 @@ module EarlScribe
         bytes = 0
         chunk_size = 16_384
         while (data = @stream.read(chunk_size))
-          break if data.empty?
-
           bytes += data.bytesize
           encoder&.push(data)
           block.call(data)

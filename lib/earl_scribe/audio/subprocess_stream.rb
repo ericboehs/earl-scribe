@@ -6,7 +6,7 @@ module EarlScribe
     # stderr drainage so capture failures surface with useful diagnostics
     # instead of silently producing zero audio.
     class SubprocessStream
-      attr_reader :name, :stderr_buffer
+      attr_reader :io, :name, :stderr_buffer
 
       def self.spawn(cmd)
         err_r, err_w = IO.pipe

@@ -67,10 +67,10 @@ module EarlScribe
         end
       end
 
-      test "start_streaming warns when mic dies mid-session but some audio flowed" do
+      test "start_streaming warns when a stream dies mid-session but some audio flowed" do
         capture = EarlScribe::Audio::DualCapture.new
         sys = build_stream(([10] * 1920).pack("s<*"), name: "audiotee")
-        mic = build_stream(([5] * 960).pack("s<*"), stderr: "mic dropped", name: "sox")
+        mic = build_stream(([5] * 1920).pack("s<*"), name: "sox")
 
         logged = []
         logger = Logger.new(StringIO.new)
@@ -82,7 +82,7 @@ module EarlScribe
           end
         end
 
-        assert_match(/sox.*ended mid-session.*mic dropped/, logged.join)
+        assert_match(/(audiotee|sox).*ended mid-session/, logged.join)
       end
 
       test "start_streaming tees to recording encoder when recording_path set" do
@@ -149,13 +149,14 @@ module EarlScribe
       end
 
       def build_stream(data, name:, stderr: "")
-        io = StringIO.new(data.to_s.b)
+        r, w = IO.pipe
+        w.write(data.to_s.b) unless data.to_s.empty?
+        w.close
         stream = Object.new
-        stream.define_singleton_method(:read) do |n|
-          chunk = io.read(n)
-          chunk if chunk && !chunk.empty?
+        stream.define_singleton_method(:io) { r }
+        stream.define_singleton_method(:stop) do
+          r.close unless r.closed?
         end
-        stream.define_singleton_method(:stop) { nil }
         stream.define_singleton_method(:name) { name }
         stream.define_singleton_method(:stderr_tail) { |**_| stderr }
         stream

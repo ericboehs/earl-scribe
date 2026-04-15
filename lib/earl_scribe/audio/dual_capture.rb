@@ -38,7 +38,7 @@ module EarlScribe
         encoder = build_recording_encoder
         encoder&.start
         bytes_read, failed = pump(encoder, &block)
-        check_health(bytes_read, failed) if failed
+        check_health(bytes_read, failed)
       ensure
         encoder&.stop
         stop
@@ -55,26 +55,36 @@ module EarlScribe
 
       def pump(encoder, &block)
         chunk_bytes = CHUNK_FRAMES * BYTES_PER_SAMPLE
+        buffers = { system: +"".b, mic: +"".b }
         bytes = 0
         loop do
-          sys = read_exact(@system, chunk_bytes) or return [bytes, :system]
-          mic = read_exact(@mic, chunk_bytes) or return [bytes, :mic]
-          chunk = combine(sys, mic)
-          bytes += chunk.bytesize
-          encoder&.push(chunk)
-          block.call(chunk)
+          ended = drain_ready_into(buffers)
+          return [bytes, ended] if ended
+
+          bytes += emit_aligned_chunks(buffers, chunk_bytes, encoder, &block)
         end
       end
 
-      def read_exact(stream, bytes)
-        buf = +"".b
-        while buf.bytesize < bytes
-          data = stream.read(bytes - buf.bytesize)
-          return nil if data.nil? || data.empty?
-
-          buf << data
+      def drain_ready_into(buffers)
+        ready, = IO.select([@system.io, @mic.io])
+        ready.each do |io|
+          key = io == @system.io ? :system : :mic
+          buffers[key] << io.readpartial(16_384)
+        rescue EOFError
+          return key
         end
-        buf
+        nil
+      end
+
+      def emit_aligned_chunks(buffers, chunk_bytes, encoder, &block)
+        emitted = 0
+        while buffers[:system].bytesize >= chunk_bytes && buffers[:mic].bytesize >= chunk_bytes
+          chunk = combine(buffers[:system].slice!(0, chunk_bytes), buffers[:mic].slice!(0, chunk_bytes))
+          emitted += chunk.bytesize
+          encoder&.push(chunk)
+          block.call(chunk)
+        end
+        emitted
       end
 
       def check_health(bytes_read, failed)

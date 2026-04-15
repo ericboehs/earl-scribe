@@ -266,10 +266,16 @@ module EarlScribe
         client = build_mock_client
         capture = build_mock_capture
 
+        captured_channels = nil
+        dual_stub = lambda { |**kwargs|
+          captured_channels = kwargs[:channels]
+          capture
+        }
+
         EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
           EarlScribe::Speaker::Encoder.stub(:available?, false) do
             EarlScribe::Transcription::Deepgram.stub(:new, client) do
-              EarlScribe::Audio::DualCapture.stub(:new, capture) do
+              EarlScribe::Audio::DualCapture.stub(:new, dual_stub) do
                 EarlScribe.stub(:data_dir, @data_dir) do
                   _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
                   assert_includes stderr, "System Audio (audiotee) + Mic"
@@ -279,6 +285,8 @@ module EarlScribe
             end
           end
         end
+
+        assert_equal 1, captured_channels, "default should pass channels=1 to DualCapture"
       end
 
       test "run_deepgram default with --stereo interleaves dual capture" do
