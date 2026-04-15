@@ -11,16 +11,21 @@ module EarlScribe
         title = options[:title] || meeting&.dig(:title)
         paths = Transcription::TranscriptWriter.build_paths(record: options[:record], meeting_title: title)
         SessionContext.new(
-          capture: build_capture(device, channels, paths[:recording]),
+          capture: build_capture(device, options, channels, paths[:recording]),
           writer: Transcription::TranscriptWriter.new(paths[:transcript]),
           jsonl: build_jsonl_writer(paths[:jsonl], title, meeting),
           meeting: meeting, paths: paths
         )
       end
 
-      def self.build_capture(device, channels, recording_path)
-        return build_audiotee_capture(channels, recording_path) unless device
+      def self.build_capture(device, options, channels, recording_path)
+        return build_device_capture(device, channels, recording_path) if device
+        return build_audiotee_capture(channels, recording_path) if options[:no_mic]
 
+        build_dual_capture(options[:mic], channels, recording_path)
+      end
+
+      def self.build_device_capture(device, channels, recording_path)
         Audio::Capture.new(device_index: device.index, device_name: device.name, channels: channels,
                            sample_rate: Config.audio_sample_rate, recording_path: recording_path)
       end
@@ -28,6 +33,11 @@ module EarlScribe
       def self.build_audiotee_capture(channels, recording_path)
         Audio::AudioTee.new(channels: channels, sample_rate: Config.audio_sample_rate,
                             recording_path: recording_path)
+      end
+
+      def self.build_dual_capture(mic, channels, recording_path)
+        Audio::DualCapture.new(mic_device: mic, channels: channels,
+                               sample_rate: Config.audio_sample_rate, recording_path: recording_path)
       end
 
       def self.build_jsonl_writer(path, title, meeting)
@@ -64,7 +74,8 @@ module EarlScribe
           transcript: ctx.paths[:transcript], recording: ctx.paths[:recording] }
       end
 
-      private_class_method :build_capture, :build_audiotee_capture, :build_jsonl_writer,
+      private_class_method :build_capture, :build_device_capture, :build_audiotee_capture,
+                           :build_dual_capture, :build_jsonl_writer,
                            :print_session_summary, :append_path
     end
   end

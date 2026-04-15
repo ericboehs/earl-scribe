@@ -6,10 +6,9 @@ module EarlScribe
   module Cli
     class TranscribeBannerTest < Minitest::Test
       test "prints engine and device info to stderr" do
-        device = EarlScribe::Audio::Device::DeviceInfo.new(index: 0, name: "TestMic")
-
         _stdout, stderr = capture_io do
-          TranscribeBanner.print(device, engine: "Deepgram Nova-3", mode: "stereo", id_status: "enabled")
+          TranscribeBanner.print(engine: "Deepgram Nova-3", mode: "stereo",
+                                 id_status: "enabled", device_label: "[0] TestMic")
         end
 
         assert_includes stderr, "Deepgram Nova-3"
@@ -19,51 +18,47 @@ module EarlScribe
       end
 
       test "includes recording path when provided" do
-        device = EarlScribe::Audio::Device::DeviceInfo.new(index: 1, name: "Mic2")
-
         _stdout, stderr = capture_io do
-          TranscribeBanner.print(device, engine: "whisper.cpp", mode: "local", id_status: "disabled",
-                                         session: { recording: "earl-scribe-20260302_140000.m4a" })
+          TranscribeBanner.print(engine: "whisper.cpp", mode: "local", id_status: "disabled",
+                                 device_label: "[1] Mic2",
+                                 session: { recording: "earl-scribe-20260302_140000.m4a" })
         end
 
         assert_includes stderr, "Recording:  earl-scribe-20260302_140000.m4a"
       end
 
       test "omits recording line when nil" do
-        device = EarlScribe::Audio::Device::DeviceInfo.new(index: 0, name: "TestMic")
-
         _stdout, stderr = capture_io do
-          TranscribeBanner.print(device, engine: "Deepgram Nova-3", mode: "stereo", id_status: "disabled")
+          TranscribeBanner.print(engine: "Deepgram Nova-3", mode: "stereo",
+                                 id_status: "disabled", device_label: "[0] TestMic")
         end
 
         assert_not_includes stderr, "Recording:"
       end
 
       test "includes transcript path when provided" do
-        device = EarlScribe::Audio::Device::DeviceInfo.new(index: 0, name: "TestMic")
-
         _stdout, stderr = capture_io do
-          TranscribeBanner.print(device, engine: "Deepgram Nova-3", mode: "stereo", id_status: "disabled",
-                                         session: { transcript: "/tmp/earl-scribe-20260302_140000.txt" })
+          TranscribeBanner.print(engine: "Deepgram Nova-3", mode: "stereo", id_status: "disabled",
+                                 device_label: "[0] TestMic",
+                                 session: { transcript: "/tmp/earl-scribe-20260302_140000.txt" })
         end
 
         assert_includes stderr, "Transcript: /tmp/earl-scribe-20260302_140000.txt"
       end
 
       test "omits transcript line when not provided" do
-        device = EarlScribe::Audio::Device::DeviceInfo.new(index: 0, name: "TestMic")
-
         _stdout, stderr = capture_io do
-          TranscribeBanner.print(device, engine: "Deepgram Nova-3", mode: "stereo", id_status: "disabled")
+          TranscribeBanner.print(engine: "Deepgram Nova-3", mode: "stereo",
+                                 id_status: "disabled", device_label: "[0] TestMic")
         end
 
         assert_not_includes stderr, "Transcript:"
       end
 
-      test "shows system audio label when device is nil" do
+      test "shows custom device label like System Audio" do
         _stdout, stderr = capture_io do
-          TranscribeBanner.print(nil, engine: "Deepgram Nova-3", mode: "system audio (mono)",
-                                      id_status: "disabled")
+          TranscribeBanner.print(engine: "Deepgram Nova-3", mode: "system audio (mono)",
+                                 id_status: "disabled", device_label: "System Audio (audiotee)")
         end
 
         assert_includes stderr, "System Audio (audiotee)"

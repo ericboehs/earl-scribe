@@ -15,11 +15,17 @@ module EarlScribe
         abort "whisper.cpp not available. Set WHISPER_CPP_PATH and WHISPER_MODELS_DIR." unless whisper.available?
         id_ok = opts[:identify] && Speaker::Encoder.available?
         ctx = TranscribeSession.build(device, opts)
-        title = opts[:title] || ctx.meeting&.dig(:title)
-        TranscribeBanner.print(device, engine: "whisper.cpp", mode: "local", id_status: id_ok ? "enabled" : "disabled",
-                                       session: TranscribeSession.session_info(ctx, meeting_title: title))
+        print_banner(ctx, device, opts, id_ok)
         identifier = Speaker::Identifier.new(store: Speaker::Store.new, threshold: opts[:threshold]) if id_ok
         run_chunked(ctx, whisper, identifier)
+      end
+
+      def self.print_banner(ctx, device, opts, id_ok)
+        title = opts[:title] || ctx.meeting&.dig(:title)
+        TranscribeBanner.print(engine: "whisper.cpp", mode: "local",
+                               device_label: "[#{device.index}] #{device.name}",
+                               id_status: id_ok ? "enabled" : "disabled",
+                               session: TranscribeSession.session_info(ctx, meeting_title: title))
       end
 
       # Bundles the per-chunk dependencies (session context, whisper wrapper, and speaker identifier)
@@ -63,7 +69,8 @@ module EarlScribe
         ctx.jsonl.write_segment(seg)
       end
 
-      private_class_method :run_chunked, :process_all_chunks, :process_chunk, :build_segment, :emit_segment
+      private_class_method :print_banner, :run_chunked, :process_all_chunks, :process_chunk,
+                           :build_segment, :emit_segment
     end
   end
 end
