@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Build the audiotee CLI into vendor/audiotee and print export instructions.
+# AudioTee uses Core Audio Taps (macOS 14.2+) to capture system audio without
+# kernel extensions like Loopback or BlackHole.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+REPO_URL="https://github.com/makeusabrew/audiotee.git"
+VENDOR_DIR="vendor/audiotee"
+
+if ! command -v swift >/dev/null 2>&1; then
+  echo "error: Swift compiler not found. Install Xcode or the Swift toolchain." >&2
+  exit 1
+fi
+
+if [ ! -d "$VENDOR_DIR" ]; then
+  echo "==> Cloning audiotee into $VENDOR_DIR"
+  git clone "$REPO_URL" "$VENDOR_DIR"
+else
+  echo "==> Updating existing $VENDOR_DIR"
+  git -C "$VENDOR_DIR" pull --ff-only
+fi
+
+echo "==> Building audiotee (release)"
+(cd "$VENDOR_DIR" && swift build -c release)
+
+BUILD_BIN="$(cd "$VENDOR_DIR" && swift build -c release --show-bin-path)/audiotee"
+
+if [ ! -x "$BUILD_BIN" ]; then
+  echo "error: built binary not found at $BUILD_BIN" >&2
+  exit 1
+fi
+
+STABLE_BIN="$PWD/$VENDOR_DIR/bin/audiotee"
+mkdir -p "$(dirname "$STABLE_BIN")"
+cp "$BUILD_BIN" "$STABLE_BIN"
+
+echo
+echo "==> Done."
+echo "Binary: $STABLE_BIN"
+echo
+echo "Export this to make earl-scribe find it:"
+echo "  export EARL_SCRIBE_AUDIOTEE_PATH=\"$STABLE_BIN\""

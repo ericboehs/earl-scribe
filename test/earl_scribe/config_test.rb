@@ -81,6 +81,42 @@ module EarlScribe
       ENV.delete("DEEPGRAM_MIP_OPT_OUT")
     end
 
+    test "audio_mic has default" do
+      ENV.delete("AUDIO_MIC")
+      assert_equal "default", EarlScribe::Config.audio_mic
+    end
+
+    test "audio_mic reads from env" do
+      ENV["AUDIO_MIC"] = "Streamer X Main"
+      assert_equal "Streamer X Main", EarlScribe::Config.audio_mic
+    ensure
+      ENV.delete("AUDIO_MIC")
+    end
+
+    test "audio_device_explicit? is false when env var unset" do
+      ENV.delete("AUDIO_DEVICE")
+      assert_not EarlScribe::Config.audio_device_explicit?
+    end
+
+    test "audio_device_explicit? is true when env var set" do
+      ENV["AUDIO_DEVICE"] = "Loopback Meeting"
+      assert EarlScribe::Config.audio_device_explicit?
+    ensure
+      ENV.delete("AUDIO_DEVICE")
+    end
+
+    test "audiotee_path has default" do
+      ENV.delete("EARL_SCRIBE_AUDIOTEE_PATH")
+      assert_equal "audiotee", EarlScribe::Config.audiotee_path
+    end
+
+    test "audiotee_path reads from env" do
+      ENV["EARL_SCRIBE_AUDIOTEE_PATH"] = "/opt/audiotee"
+      assert_equal "/opt/audiotee", EarlScribe::Config.audiotee_path
+    ensure
+      ENV.delete("EARL_SCRIBE_AUDIOTEE_PATH")
+    end
+
     test "calendar_names returns nil by default" do
       ENV.delete("EARL_SCRIBE_CALENDAR_NAMES")
       assert_nil EarlScribe::Config.calendar_names

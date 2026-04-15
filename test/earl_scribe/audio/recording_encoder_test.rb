@@ -50,6 +50,17 @@ module EarlScribe
 
         assert_includes logged.first, "Recording may be incomplete"
       end
+
+      test "initialize raises on invalid input_format" do
+        assert_raises(ArgumentError) do
+          RecordingEncoder.new(path: "/tmp/r.m4a", channels: 1, sample_rate: 48_000, input_format: "mp3")
+        end
+      end
+
+      test "initialize accepts s16le input_format" do
+        rec = RecordingEncoder.new(path: "/tmp/r.m4a", channels: 1, sample_rate: 48_000, input_format: "s16le")
+        assert_equal "s16le", rec.instance_variable_get(:@config).input_format
+      end
     end
   end
 end

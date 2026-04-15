@@ -4,14 +4,14 @@ module EarlScribe
   module Cli
     # Prints the startup banner for transcription sessions
     module TranscribeBanner
-      def self.print(device, engine:, mode:, id_status:, session: {})
-        warn build_lines(device, engine, mode, id_status, session)
+      def self.print(engine:, mode:, id_status:, device_label:, session: {})
+        warn build_lines(device_label, engine, mode, id_status, session)
       end
 
-      def self.build_lines(device, engine, mode, id_status, session)
+      def self.build_lines(device_label, engine, mode, id_status, session)
         lines = +"=== Meeting Transcription (#{engine}) ===\n"
         session[:meeting_title]&.tap { |title| lines << "Meeting:    #{title}\n" }
-        lines << "Device:     [#{device.index}] #{device.name}\n"
+        lines << "Device:     #{device_label}\n"
         lines << "Mode:       #{mode}\n"
         lines << "Speaker ID: #{id_status}\n"
         session[:transcript]&.tap { |path| lines << "Transcript: #{path}\n" }

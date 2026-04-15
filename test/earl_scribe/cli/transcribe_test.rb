@@ -28,11 +28,35 @@ module EarlScribe
         whisper.verify
       end
 
+      test "run warns on unknown flags" do
+        EarlScribe::Config.stub(:deepgram_api_key, nil) do
+          _stdout, stderr = capture_io do
+            assert_raises(SystemExit) do
+              EarlScribe::Cli::Transcribe.run(["--mono", "--bogus"])
+            end
+          end
+          assert_includes stderr, "unknown flag"
+          assert_includes stderr, "--mono"
+          assert_includes stderr, "--bogus"
+        end
+      end
+
+      test "run does not warn on value flag arguments" do
+        EarlScribe::Config.stub(:deepgram_api_key, nil) do
+          _stdout, stderr = capture_io do
+            assert_raises(SystemExit) do
+              EarlScribe::Cli::Transcribe.run(["--title", "Daily", "--mic", "TestMic"])
+            end
+          end
+          assert_not_includes stderr, "unknown flag"
+        end
+      end
+
       test "run without --local aborts without api key" do
         device = build_device
         EarlScribe::Audio::Device.stub(:resolve, device) do
           EarlScribe::Config.stub(:deepgram_api_key, nil) do
-            error = assert_raises(SystemExit) { EarlScribe::Cli::Transcribe.run([]) }
+            error = assert_raises(SystemExit) { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
             assert_equal 1, error.status
           end
         end
@@ -212,7 +236,86 @@ module EarlScribe
         assert_equal "Meeting", resolved_name
       end
 
-      test "run_deepgram prints stereo banner and starts stream" do
+      test "run_deepgram with --no-mic skips device resolution and uses AudioTee" do
+        client = build_mock_client
+        capture = build_mock_capture
+
+        resolve_called = false
+        EarlScribe::Audio::Device.stub(:resolve, ->(_) { resolve_called = true }) do
+          EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+            EarlScribe::Speaker::Encoder.stub(:available?, false) do
+              EarlScribe::Transcription::Deepgram.stub(:new, client) do
+                EarlScribe::Audio::AudioTee.stub(:new, capture) do
+                  EarlScribe.stub(:data_dir, @data_dir) do
+                    _stdout, stderr = capture_io do
+                      EarlScribe::Cli::Transcribe.run(["--no-mic"])
+                    end
+                    assert_includes stderr, "System Audio (audiotee)"
+                    assert_includes stderr, "system audio (mono)"
+                  end
+                end
+              end
+            end
+          end
+        end
+
+        assert_not resolve_called, "expected Audio::Device.resolve to be skipped"
+      end
+
+      test "run_deepgram default uses DualCapture with mic + system audio" do
+        client = build_mock_client
+        capture = build_mock_capture
+
+        captured_channels = nil
+        dual_stub = lambda { |**kwargs|
+          captured_channels = kwargs[:channels]
+          capture
+        }
+
+        EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+          EarlScribe::Speaker::Encoder.stub(:available?, false) do
+            EarlScribe::Transcription::Deepgram.stub(:new, client) do
+              EarlScribe::Audio::DualCapture.stub(:new, dual_stub) do
+                EarlScribe.stub(:data_dir, @data_dir) do
+                  _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                  assert_includes stderr, "System Audio (audiotee) + Mic"
+                  assert_includes stderr, "system + mic mono mix"
+                end
+              end
+            end
+          end
+        end
+
+        assert_equal 1, captured_channels, "default should pass channels=1 to DualCapture"
+      end
+
+      test "run_deepgram default with --stereo interleaves dual capture" do
+        client = build_mock_client
+        capture = build_mock_capture
+
+        captured_channels = nil
+        dual_stub = lambda { |**kwargs|
+          captured_channels = kwargs[:channels]
+          capture
+        }
+
+        EarlScribe::Config.stub(:deepgram_api_key, "test-key") do
+          EarlScribe::Speaker::Encoder.stub(:available?, false) do
+            EarlScribe::Transcription::Deepgram.stub(:new, client) do
+              EarlScribe::Audio::DualCapture.stub(:new, dual_stub) do
+                EarlScribe.stub(:data_dir, @data_dir) do
+                  _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--stereo"]) }
+                  assert_includes stderr, "interleaved"
+                end
+              end
+            end
+          end
+        end
+
+        assert_equal 2, captured_channels
+      end
+
+      test "run_deepgram with --stereo prints stereo banner and starts stream" do
         device = build_device
         client = build_mock_client
         capture = build_mock_streaming_capture("data")
@@ -223,7 +326,9 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                    _stdout, stderr = capture_io do
+                      EarlScribe::Cli::Transcribe.run(["--device", "TestMic", "--stereo"])
+                    end
                     assert_includes stderr, "stereo"
                     assert_includes stderr, "Deepgram Nova-3"
                   end
@@ -234,7 +339,7 @@ module EarlScribe
         end
       end
 
-      test "run_deepgram with --mono prints mono banner" do
+      test "run_deepgram defaults to mono banner" do
         device = build_device
         client = build_mock_client
         capture = build_mock_capture
@@ -245,7 +350,7 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--mono"]) }
+                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                     assert_includes stderr, "mono"
                   end
                 end
@@ -270,7 +375,7 @@ module EarlScribe
                 EarlScribe::Transcription::Deepgram.stub(:new, client) do
                   EarlScribe::Audio::Capture.stub(:new, capture) do
                     EarlScribe.stub(:data_dir, @data_dir) do
-                      capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                      capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                     end
                   end
                 end
@@ -293,7 +398,9 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--no-identify"]) }
+                    _stdout, stderr = capture_io do
+                      EarlScribe::Cli::Transcribe.run(["--device", "TestMic", "--no-identify"])
+                    end
                     assert_includes stderr, "Speaker ID: disabled"
                   end
                 end
@@ -325,7 +432,7 @@ module EarlScribe
                 EarlScribe::Transcription::Deepgram.stub(:new, client) do
                   EarlScribe::Audio::Capture.stub(:new, capture) do
                     EarlScribe.stub(:data_dir, @data_dir) do
-                      capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                      capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                     end
                   end
                 end
@@ -355,7 +462,7 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                    capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                   end
                 end
               end
@@ -387,7 +494,7 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, mono_capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    capture_io { EarlScribe::Cli::Transcribe.run(["--mono"]) }
+                    capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                   end
                 end
               end
@@ -423,7 +530,7 @@ module EarlScribe
                 EarlScribe::Transcription::Deepgram.stub(:new, client) do
                   EarlScribe::Audio::Capture.stub(:new, interrupt_capture) do
                     EarlScribe.stub(:data_dir, @data_dir) do
-                      capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                      capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                     end
                   end
                 end
@@ -457,7 +564,7 @@ module EarlScribe
                   EarlScribe::Audio::Capture.stub(:new, interrupt_capture) do
                     EarlScribe.stub(:data_dir, @data_dir) do
                       EarlScribe::Cli::LearnRewriter.stub(:rewrite, ->(rec, updates) { rewrite_called = true }) do
-                        capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                        capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                       end
                     end
                   end
@@ -490,7 +597,7 @@ module EarlScribe
                   EarlScribe::Audio::Capture.stub(:new, interrupt_capture) do
                     EarlScribe.stub(:data_dir, @data_dir) do
                       EarlScribe::Cli::LearnRewriter.stub(:rewrite, ->(rec, updates) { rewrite_called = true }) do
-                        capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                        capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                       end
                     end
                   end
@@ -520,7 +627,7 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, interrupt_capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                    capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                   end
                 end
               end
@@ -542,7 +649,9 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--record"]) }
+                    _stdout, stderr = capture_io do
+                      EarlScribe::Cli::Transcribe.run(["--device", "TestMic", "--record"])
+                    end
                     assert_includes stderr, "Recording:  #{@data_dir}"
                     assert_includes stderr, ".m4a"
                   end
@@ -564,7 +673,7 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                     assert_not_includes stderr, "Recording:"
                   end
                 end
@@ -625,7 +734,7 @@ module EarlScribe
                 EarlScribe::Transcription::Deepgram.stub(:new, client) do
                   EarlScribe::Audio::Capture.stub(:new, capture) do
                     EarlScribe.stub(:data_dir, @data_dir) do
-                      _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                      _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                       assert_includes stderr, "Speaker ID: enabled"
                     end
                   end
@@ -647,7 +756,7 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                    _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                     assert_includes stderr, "Transcript: #{@data_dir}"
                     assert_includes stderr, ".txt"
                   end
@@ -691,7 +800,7 @@ module EarlScribe
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
                     EarlScribe::Calendar.stub(:current_meeting, meeting) do
-                      _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                      _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                       assert_includes stderr, "Meeting:    EERT Standup"
                     end
                   end
@@ -713,7 +822,7 @@ module EarlScribe
               EarlScribe::Transcription::Deepgram.stub(:new, client) do
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
-                    capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                    capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                     jsonl_files = Dir.glob(File.join(@data_dir, "*.jsonl"))
                     assert_equal 1, jsonl_files.size
                     content = File.read(jsonl_files.first)
@@ -801,7 +910,7 @@ module EarlScribe
                 EarlScribe::Audio::Capture.stub(:new, capture) do
                   EarlScribe.stub(:data_dir, @data_dir) do
                     EarlScribe::Calendar.stub(:current_meeting, meeting) do
-                      capture_io { EarlScribe::Cli::Transcribe.run([]) }
+                      capture_io { EarlScribe::Cli::Transcribe.run(["--device", "TestMic"]) }
                       jsonl_files = Dir.glob(File.join(@data_dir, "*.jsonl"))
                       content = File.read(jsonl_files.first)
                       assert_includes content, "Sprint Planning"
