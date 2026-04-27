@@ -4,20 +4,19 @@ require_relative "transcribe_banner"
 require_relative "transcribe_flags"
 require_relative "transcribe_mode"
 require_relative "transcribe_session"
-require_relative "transcribe_local"
+require_relative "transcribe_summarizer"
 require_relative "terminal_display"
 require_relative "learn_rewriter"
 
 module EarlScribe
   module Cli
-    # Starts a live transcription session via Deepgram or local whisper.cpp
     module Transcribe
       SPEAKER_RE = /\A((?:Ch\d+ )?)Speaker (\d+)\z/.freeze
 
       def self.run(argv)
         opts = TranscribeFlags.parse(argv)
         device = resolve_device(opts)
-        opts[:local] ? TranscribeLocal.run(device, opts) : run_deepgram(device, opts)
+        opts[:cloud] ? run_cloud(device, opts) : run_local(device, opts)
       end
 
       def self.resolve_device(opts)
@@ -26,22 +25,50 @@ module EarlScribe
         Audio::Device.resolve(TranscribeMode.resolve_device_name(opts))
       end
 
-      def self.run_deepgram(device, opts)
-        api_key = Config.deepgram_api_key || abort("DEEPGRAM_API_KEY not set. Get a key at: https://console.deepgram.com/signup")
-        channels = TranscribeMode.channels(opts)
-        ctx = TranscribeSession.build(device, opts, channels: channels)
-        ctx.term_display = TerminalDisplay.new
+      def self.run_local(device, opts)
+        warn_stereo_local(opts)
+        opts = opts.merge(stereo: false)
+        ctx = build_context(device, opts, channels: 1)
         resolver = build_resolver(ctx, opts)
-        print_banner(ctx, device, opts, channels, resolver)
-        stream_deepgram(api_key, ctx, resolver)
+        scheduler = build_summary_scheduler(ctx, opts)
+        announce(ctx, device, opts, 1, resolver, "Parakeet EOU 120M (local)")
+        scheduler&.start
+        stream_local(ctx, resolver, opts)
+      ensure
+        scheduler&.stop
       end
 
-      def self.print_banner(ctx, device, opts, channels, resolver)
+      def self.run_cloud(device, opts)
+        api_key = Config.deepgram_api_key || abort("DEEPGRAM_API_KEY not set. Get a key at: https://console.deepgram.com/signup")
+        channels = TranscribeMode.channels(opts)
+        ctx = build_context(device, opts, channels: channels)
+        resolver = build_resolver(ctx, opts)
+        announce(ctx, device, opts, channels, resolver, "Deepgram Nova-3")
+        stream_cloud(api_key, ctx, resolver)
+      end
+
+      def self.build_context(device, opts, channels:)
+        ctx = TranscribeSession.build(device, opts, channels: channels)
+        ctx.term_display = TerminalDisplay.new
+        ctx
+      end
+
+      def self.warn_stereo_local(opts)
+        return unless opts[:stereo]
+
+        warn "warning: --stereo is ignored with the local backend (mono mix is required)"
+      end
+
+      def self.announce(ctx, device, opts, channels, resolver, engine)
         title = opts[:title] || ctx.meeting&.dig(:title)
-        TranscribeBanner.print(engine: "Deepgram Nova-3", mode: TranscribeMode.describe(device, opts, channels),
+        TranscribeBanner.print(engine: engine, mode: TranscribeMode.describe(device, opts, channels),
                                device_label: TranscribeMode.device_label_for_banner(device, opts),
                                id_status: resolver ? "enabled" : "disabled",
                                session: TranscribeSession.session_info(ctx, meeting_title: title))
+      end
+
+      def self.build_summary_scheduler(ctx, opts)
+        TranscribeSummarizer.build(ctx, opts)
       end
 
       def self.build_resolver(ctx, opts)
@@ -52,16 +79,46 @@ module EarlScribe
         ) { |ck, old_n, new_n| ctx.term_display.reprint_speaker(ck, old_n, new_n) }
       end
 
-      def self.stream_deepgram(api_key, ctx, resolver)
-        capture = ctx.capture
-        client = Transcription::Deepgram.new(api_key: api_key, channels: capture.channels,
-                                             sample_rate: capture.sample_rate)
-        client.connect(->(result) { handle_result(result, resolver, ctx) })
-        capture.start_streaming { |data| forward_chunk(client, resolver, data) }
-      rescue Interrupt
-        client.close
-        correct_files(ctx, resolver&.shutdown)
-        TranscribeSession.close_writers(ctx)
+      def self.stream_local(ctx, resolver, _opts)
+        client = nil
+        begin
+          capture = ctx.capture
+          client = Transcription::LocalStream.new(channels: capture.channels,
+                                                  sample_rate: capture.sample_rate)
+          client.connect(->(result) { handle_result(result, resolver, ctx) })
+          capture.start_streaming { |data| forward_chunk(client, resolver, data) }
+        rescue Interrupt
+          nil
+        end
+      ensure
+        teardown_local(ctx, client, resolver)
+      end
+
+      def self.teardown_local(ctx, client, resolver)
+        safe_step { client&.close }
+        safe_step { correct_files(ctx, resolver&.shutdown) }
+        safe_step { TranscribeSession.close_writers(ctx) }
+      end
+
+      def self.safe_step
+        yield
+      rescue StandardError => error
+        EarlScribe.logger.error("teardown step failed: #{error.class}: #{error.message}")
+      end
+
+      def self.stream_cloud(api_key, ctx, resolver)
+        client = nil
+        begin
+          capture = ctx.capture
+          client = Transcription::Deepgram.new(api_key: api_key, channels: capture.channels,
+                                               sample_rate: capture.sample_rate)
+          client.connect(->(result) { handle_result(result, resolver, ctx) })
+          capture.start_streaming { |data| forward_chunk(client, resolver, data) }
+        rescue Interrupt
+          nil
+        end
+      ensure
+        teardown_local(ctx, client, resolver)
       end
 
       def self.forward_chunk(client, resolver, data)
@@ -78,32 +135,41 @@ module EarlScribe
       end
 
       def self.write_segment(ctx, seg, cache_key)
-        flushed = ctx.term_display.accumulate(seg, cache_key: cache_key)
-        ctx.writer.write_line(flushed.to_timestamped_s) if flushed
+        seg.cache_key = cache_key
+        ctx.term_display.commit(seg, cache_key: cache_key)
+        ctx.writer.write_line(seg.to_timestamped_s)
         ctx.jsonl.write_segment(seg)
       end
 
       def self.resolve_speaker(seg, words, resolver)
         return unless (match = resolver && seg.speaker&.match(SPEAKER_RE))
 
-        cache_key = "#{match[1]}#{match[2]}"
-        if (name = resolver.resolve_label(cache_key, words, channel: seg.channel))
+        cache_key = segment_cache_key(seg, match)
+        name = resolver.resolve_label(cache_key, words, channel: seg.channel, speaker_label: seg.speaker)
+        if name
           seg.original_speaker = seg.speaker
           seg.speaker = name
         end
         cache_key
       end
 
+      def self.segment_cache_key(seg, match)
+        prefix = match[1]
+        ts = format("%.3f", seg.start_time.to_f)
+        "#{prefix}seg-#{ts}"
+      end
+
       def self.correct_files(ctx, map)
         return unless map&.any?
 
-        LearnRewriter.rewrite({ jsonl_path: ctx.paths[:jsonl] },
-                              map.transform_keys { |k| (m = k.match(SPEAKER_RE)) ? "#{m[1]}Speaker #{m[2]}" : k })
+        LearnRewriter.rewrite({ jsonl_path: ctx.paths[:jsonl] }, map)
       end
 
-      private_class_method(*%i[resolve_device run_deepgram print_banner build_resolver
-                               stream_deepgram forward_chunk handle_result write_segment
-                               resolve_speaker correct_files])
+      private_class_method(*%i[resolve_device run_local run_cloud build_context warn_stereo_local
+                               announce build_resolver build_summary_scheduler
+                               stream_local stream_cloud teardown_local safe_step
+                               forward_chunk handle_result
+                               write_segment resolve_speaker segment_cache_key correct_files])
     end
   end
 end

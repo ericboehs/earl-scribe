@@ -12,8 +12,8 @@ module EarlScribe
     end
 
     test "get returns default when env var not set" do
-      ENV.delete("WHISPER_CPP_PATH")
-      assert_equal "whisper-cpp", EarlScribe::Config.get("WHISPER_CPP_PATH")
+      ENV.delete("EARL_SCRIBE_AUDIOTEE_PATH")
+      assert_equal "audiotee", EarlScribe::Config.get("EARL_SCRIBE_AUDIOTEE_PATH")
     end
 
     test "get returns nil for unknown key with no default" do
@@ -28,36 +28,51 @@ module EarlScribe
       ENV.delete("DEEPGRAM_API_KEY")
     end
 
-    test "whisper_cpp_path has default" do
-      ENV.delete("WHISPER_CPP_PATH")
-      assert_equal "whisper-cpp", EarlScribe::Config.whisper_cpp_path
-    end
-
-    test "whisper_models_dir returns nil by default" do
-      ENV.delete("WHISPER_MODELS_DIR")
-      assert_nil EarlScribe::Config.whisper_models_dir
-    end
-
-    test "whisper_model has default" do
-      ENV.delete("WHISPER_MODEL")
-      assert_equal "large-v3", EarlScribe::Config.whisper_model
-    end
-
     test "audio_device has default" do
       ENV.delete("AUDIO_DEVICE")
       assert_equal "Meeting", EarlScribe::Config.audio_device
     end
 
-    test "audio_chunk_seconds returns integer" do
-      ENV.delete("AUDIO_CHUNK_SECONDS")
-      assert_equal 10, EarlScribe::Config.audio_chunk_seconds
+    test "asr_bin has default" do
+      ENV.delete("EARL_SCRIBE_ASR_BIN")
+      assert_equal "earl-scribe-asr", EarlScribe::Config.asr_bin
     end
 
-    test "audio_chunk_seconds reads from env" do
-      ENV["AUDIO_CHUNK_SECONDS"] = "30"
-      assert_equal 30, EarlScribe::Config.audio_chunk_seconds
+    test "asr_chunk_ms returns integer with default" do
+      ENV.delete("EARL_SCRIBE_ASR_CHUNK_MS")
+      assert_equal 320, EarlScribe::Config.asr_chunk_ms
+    end
+
+    test "llama_bin has default" do
+      ENV.delete("EARL_SCRIBE_LLAMA_BIN")
+      assert_equal "llama-cli", EarlScribe::Config.llama_bin
+    end
+
+    test "qwen_model returns nil by default" do
+      ENV.delete("EARL_SCRIBE_QWEN_MODEL")
+      assert_nil EarlScribe::Config.qwen_model
+    end
+
+    test "summary_interval_sec returns integer with default" do
+      ENV.delete("EARL_SCRIBE_SUMMARY_INTERVAL_SEC")
+      assert_equal 180, EarlScribe::Config.summary_interval_sec
+    end
+
+    test "summarize? defaults to false" do
+      ENV.delete("EARL_SCRIBE_SUMMARIZE")
+      assert_not EarlScribe::Config.summarize?
+    end
+
+    test "summarize? respects explicit enable via env" do
+      ENV["EARL_SCRIBE_SUMMARIZE"] = "1"
+      assert EarlScribe::Config.summarize?
     ensure
-      ENV.delete("AUDIO_CHUNK_SECONDS")
+      ENV.delete("EARL_SCRIBE_SUMMARIZE")
+    end
+
+    test "summary_prompt_path returns nil by default" do
+      ENV.delete("EARL_SCRIBE_SUMMARY_PROMPT")
+      assert_nil EarlScribe::Config.summary_prompt_path
     end
 
     test "deepgram_mip_opt_out? returns false by default" do

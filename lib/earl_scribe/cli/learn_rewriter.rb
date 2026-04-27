@@ -15,8 +15,9 @@ module EarlScribe
       def self.rewrite_jsonl(path, updates)
         lines = File.readlines(path).map do |line|
           data = JSON.parse(line)
-          if data["speaker"] && updates[data["speaker"]]
-            data["speaker"] = updates[data["speaker"]]
+          new_speaker = updates[data["cache_key"]] || updates[data["speaker"]]
+          if new_speaker && data["speaker"] != new_speaker
+            data["speaker"] = new_speaker
             JSON.generate(data)
           else
             line.chomp
@@ -28,7 +29,7 @@ module EarlScribe
       def self.rewrite_transcript(txt_path, jsonl_path)
         reader = Transcription::JsonlReader.new(jsonl_path)
         File.open(txt_path, "w") do |f|
-          reader.segments.each { |seg| f.puts(seg.to_s) }
+          reader.segments.each { |seg| f.puts(seg.to_timestamped_s) }
         end
       end
 

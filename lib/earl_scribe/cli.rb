@@ -18,7 +18,7 @@ module EarlScribe
       Usage: earl-scribe <command> [options]
 
       Commands:
-        transcribe   Transcribe meeting audio (Deepgram or local whisper.cpp)
+        transcribe   Transcribe meeting audio (local Parakeet by default, Deepgram via --cloud)
         speakers     Manage speaker voiceprints (enroll/list/delete/identify/test)
         devices      List available audio devices
 

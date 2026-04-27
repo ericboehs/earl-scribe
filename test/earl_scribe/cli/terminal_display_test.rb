@@ -11,6 +11,20 @@ module EarlScribe
         @display = TerminalDisplay.new(output: @output)
       end
 
+      test "commit prints segment line to output" do
+        seg = build_seg(speaker: "Speaker 0", text: "Hello")
+        @display.commit(seg, cache_key: "0")
+        assert_includes @output.string, "Speaker 0: Hello"
+      end
+
+      test "commit tracks the line for later reprinting" do
+        seg = build_seg(speaker: "Speaker 0", text: "Hello")
+        @display.commit(seg, cache_key: "0")
+        lines = @display.instance_variable_get(:@lines)
+        assert_equal 1, lines.size
+        assert_includes lines.first.text, "Speaker 0: Hello"
+      end
+
       test "print_line tracks text internally" do
         @display.print_line("Hello world")
         lines = @display.instance_variable_get(:@lines)
@@ -18,13 +32,11 @@ module EarlScribe
         assert_equal "Hello world", lines.first.text
       end
 
-      test "print_line tracks multiple lines" do
-        @display.print_line("Line 1")
-        @display.print_line("Line 2")
+      test "print_line with nil cache_key works" do
+        @display.print_line("No speaker line")
         lines = @display.instance_variable_get(:@lines)
-        assert_equal 2, lines.size
-        assert_equal "Line 1", lines[0].text
-        assert_equal "Line 2", lines[1].text
+        assert_equal "No speaker line", lines.last.text
+        assert_empty lines.last.cache_keys
       end
 
       test "reprint_speaker skips ANSI on non-TTY output" do
@@ -93,20 +105,13 @@ module EarlScribe
         assert_equal "No speaker line", lines.last.text
       end
 
-      test "trim_lines keeps at most MAX_TRACKED_LINES" do
-        (TerminalDisplay::MAX_TRACKED_LINES + 10).times do |i|
-          @display.print_line("Line #{i}", cache_key: i.to_s)
-        end
+      test "reprint_speaker rewrites a previously committed line" do
+        seg = build_seg(speaker: "Speaker 0", text: "Hello")
+        @display.commit(seg, cache_key: "0")
 
+        @display.reprint_speaker("0", "Speaker 0", "Alice")
         lines = @display.instance_variable_get(:@lines)
-        assert_equal TerminalDisplay::MAX_TRACKED_LINES, lines.size
-      end
-
-      test "print_line with nil cache_key works" do
-        @display.print_line("No speaker line")
-        lines = @display.instance_variable_get(:@lines)
-        assert_equal "No speaker line", lines.last.text
-        assert_empty lines.last.cache_keys
+        assert_includes lines.first.text, "Alice"
       end
 
       test "reprint_speaker updates multiple lines with same cache_key" do
@@ -126,125 +131,13 @@ module EarlScribe
         assert_equal "[00:00:05] Alice: More text", lines[1].text
       end
 
-      # --- accumulate tests ---
-
-      test "accumulate prints first segment to output" do
-        seg = build_seg(speaker: "Speaker 0", text: "Hello")
-        @display.accumulate(seg, cache_key: "0")
-
-        assert_includes @output.string, "Speaker 0: Hello"
-      end
-
-      test "accumulate appends same-speaker text to current line" do
-        seg1 = build_seg(speaker: "Speaker 0", text: "Hello", start_time: 0.0, end_time: 1.0)
-        seg2 = build_seg(speaker: "Speaker 0", text: "world", start_time: 1.0, end_time: 2.0)
-
-        @display.accumulate(seg1, cache_key: "0")
-        @display.accumulate(seg2, cache_key: "0")
-
-        assert_includes @output.string, " world"
-        # No newline between segments
-        lines = @display.instance_variable_get(:@lines)
-        assert_empty lines
-      end
-
-      test "accumulate flushes on speaker change" do
-        seg1 = build_seg(speaker: "Speaker 0", text: "Hello", start_time: 0.0, end_time: 1.0)
-        seg2 = build_seg(speaker: "Speaker 1", text: "Hi", start_time: 1.0, end_time: 2.0)
-
-        @display.accumulate(seg1, cache_key: "0")
-        flushed = @display.accumulate(seg2, cache_key: "1")
-
-        assert_instance_of Transcription::Result, flushed
-        assert_equal "Speaker 0", flushed.speaker
-        assert_equal "Hello", flushed.text
+      test "trim_lines keeps at most MAX_TRACKED_LINES" do
+        (TerminalDisplay::MAX_TRACKED_LINES + 10).times do |i|
+          @display.print_line("Line #{i}", cache_key: i.to_s)
+        end
 
         lines = @display.instance_variable_get(:@lines)
-        assert_equal 1, lines.size
-        assert_includes lines.first.text, "Speaker 0: Hello"
-      end
-
-      test "accumulate concatenates multiple segments before flush" do
-        seg1 = build_seg(speaker: "Speaker 0", text: "Hello", start_time: 0.0, end_time: 1.0)
-        seg2 = build_seg(speaker: "Speaker 0", text: "world", start_time: 1.0, end_time: 2.0)
-        seg3 = build_seg(speaker: "Speaker 1", text: "Hi", start_time: 2.0, end_time: 3.0)
-
-        @display.accumulate(seg1, cache_key: "0")
-        @display.accumulate(seg2, cache_key: "0")
-        flushed = @display.accumulate(seg3, cache_key: "1")
-
-        assert_equal "Hello world", flushed.text
-        assert_equal 0.0, flushed.start_time
-        assert_equal 2.0, flushed.end_time
-      end
-
-      test "accumulate returns nil when appending same speaker" do
-        seg = build_seg(speaker: "Speaker 0", text: "Hello")
-        result = @display.accumulate(seg, cache_key: "0")
-
-        assert_nil result
-      end
-
-      test "flush returns pending result" do
-        seg1 = build_seg(speaker: "Speaker 0", text: "Hello", start_time: 0.0)
-        seg2 = build_seg(speaker: "Speaker 0", text: "world", start_time: 1.0, end_time: 2.0)
-
-        @display.accumulate(seg1, cache_key: "0")
-        @display.accumulate(seg2, cache_key: "0")
-        flushed = @display.flush
-
-        assert_equal "Hello world", flushed.text
-        assert_equal "Speaker 0", flushed.speaker
-      end
-
-      test "flush returns nil when nothing pending" do
-        assert_nil @display.flush
-      end
-
-      test "flush adds line to tracked lines" do
-        seg = build_seg(speaker: "Speaker 0", text: "Hello")
-        @display.accumulate(seg, cache_key: "0")
-        @display.flush
-
-        lines = @display.instance_variable_get(:@lines)
-        assert_equal 1, lines.size
-        assert_includes lines.first.text, "Speaker 0: Hello"
-      end
-
-      test "accumulate merges segments with same speaker name but different cache_key" do
-        seg1 = build_seg(speaker: "Speaker 0", text: "Hello", start_time: 0.0, channel: 0)
-        seg2 = build_seg(speaker: "Speaker 0", text: "Hi", start_time: 1.0, channel: 1)
-
-        @display.accumulate(seg1, cache_key: "Ch0 0")
-        flushed = @display.accumulate(seg2, cache_key: "Ch1 0")
-
-        assert_nil flushed
-        result = @display.flush
-        assert_equal "Hello Hi", result.text
-      end
-
-      test "reprint_speaker updates pending after cross-channel merge" do
-        seg1 = build_seg(speaker: "Speaker 0", text: "Hello", start_time: 0.0, channel: 0)
-        seg2 = build_seg(speaker: "Speaker 0", text: "Hi", start_time: 1.0, channel: 1)
-
-        @display.accumulate(seg1, cache_key: "Ch0 0")
-        @display.accumulate(seg2, cache_key: "Ch1 0")
-
-        # Correction arrives for original channel's cache_key
-        @display.reprint_speaker("Ch0 0", "Speaker 0", "Alice")
-
-        flushed = @display.flush
-        assert_equal "Alice", flushed.speaker
-      end
-
-      test "reprint_speaker updates pending speaker name" do
-        seg = build_seg(speaker: "Speaker 0", text: "Hello")
-        @display.accumulate(seg, cache_key: "0")
-
-        @display.reprint_speaker("0", "Speaker 0", "Alice")
-
-        flushed = @display.flush
-        assert_equal "Alice", flushed.speaker
+        assert_equal TerminalDisplay::MAX_TRACKED_LINES, lines.size
       end
 
       private

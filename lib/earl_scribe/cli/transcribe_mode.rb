@@ -2,15 +2,13 @@
 
 module EarlScribe
   module Cli
-    # Derives banner labels and channel counts from the options hash — one place
-    # for the device/no-mic/dual-capture branching logic.
     module TranscribeMode
       def self.channels(opts)
         opts[:stereo] ? 2 : 1
       end
 
       def self.device_mode?(opts)
-        opts[:local] || !(opts[:device].nil? || opts[:device].empty?)
+        !(opts[:device].nil? || opts[:device].empty?)
       end
 
       def self.resolve_device_name(opts)

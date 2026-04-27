@@ -2,12 +2,12 @@
 
 module EarlScribe
   module Cli
-    # CLI flag parsing for the `transcribe` command.
     module TranscribeFlags
-      FLAG_MAP = { "--local" => [:local, true], "--stereo" => [:stereo, true],
+      FLAG_MAP = { "--cloud" => [:cloud, true], "--stereo" => [:stereo, true],
                    "--no-identify" => [:identify, false], "--record" => [:record, true],
-                   "--no-mic" => [:no_mic, true] }.freeze
-      VALUE_FLAGS = %w[--device --mic --threshold --title].freeze
+                   "--no-mic" => [:no_mic, true],
+                   "--summary" => [:summarize, true] }.freeze
+      VALUE_FLAGS = %w[--device --mic --mic-gain-db --threshold --title --summary-interval-sec].freeze
 
       def self.parse(argv)
         warn_unknown_flags(argv)
@@ -18,10 +18,24 @@ module EarlScribe
       end
 
       def self.default_options(val)
+        capture_defaults(val).merge(summary_defaults(val), boolean_defaults)
+      end
+
+      def self.capture_defaults(val)
         { device: val["--device"] || (Config.audio_device_explicit? ? Config.audio_device : nil),
           mic: val["--mic"] || Config.audio_mic,
-          threshold: val["--threshold"]&.to_f, title: val["--title"],
-          local: false, stereo: false, identify: true, record: false, no_mic: false }
+          mic_gain_db: val["--mic-gain-db"]&.to_f || Config.mic_gain_db,
+          threshold: val["--threshold"]&.to_f,
+          title: val["--title"] }
+      end
+
+      def self.summary_defaults(val)
+        { summary_interval_sec: val["--summary-interval-sec"]&.to_i || Config.summary_interval_sec,
+          summarize: Config.summarize? }
+      end
+
+      def self.boolean_defaults
+        { cloud: false, stereo: false, identify: true, record: false, no_mic: false }
       end
 
       def self.warn_unknown_flags(argv)
@@ -42,7 +56,8 @@ module EarlScribe
         arg.start_with?("--") && !VALUE_FLAGS.include?(arg) && !FLAG_MAP.key?(arg)
       end
 
-      private_class_method :default_options, :warn_unknown_flags, :unknown_flags, :unknown?
+      private_class_method :default_options, :capture_defaults, :summary_defaults, :boolean_defaults,
+                           :warn_unknown_flags, :unknown_flags, :unknown?
     end
   end
 end

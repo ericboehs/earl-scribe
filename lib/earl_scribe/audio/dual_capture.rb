@@ -10,15 +10,17 @@ module EarlScribe
       CHUNK_FRAMES = 960 # 20ms @ 48kHz
       VALID_CHANNELS = [1, 2].freeze
 
-      attr_reader :channels, :sample_rate, :recording_path, :mic_device
+      attr_reader :channels, :sample_rate, :recording_path, :mic_device, :mic_gain_db
 
-      def initialize(mic_device: "default", channels: 1, sample_rate: 48_000, recording_path: nil)
+      def initialize(mic_device: "default", channels: 1, sample_rate: 48_000, recording_path: nil,
+                     mic_gain_db: nil)
         raise ArgumentError, "channels must be 1 or 2, got #{channels}" unless VALID_CHANNELS.include?(channels)
 
         @mic_device = mic_device
         @channels = channels
         @sample_rate = sample_rate
         @recording_path = recording_path
+        @mic_gain_db = mic_gain_db || Config.mic_gain_db
         @system = nil
         @mic = nil
       end
@@ -28,8 +30,10 @@ module EarlScribe
       end
 
       def mic_command
-        ["sox", "-t", "coreaudio", mic_device, "-r", sample_rate.to_s,
-         "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"]
+        cmd = ["sox", "-t", "coreaudio", mic_device, "-r", sample_rate.to_s,
+               "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw", "-"]
+        cmd += ["gain", mic_gain_db.to_s] if mic_gain_db && mic_gain_db != 0
+        cmd
       end
 
       def start_streaming(&block)
