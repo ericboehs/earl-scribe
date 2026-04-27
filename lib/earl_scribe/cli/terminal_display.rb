@@ -56,6 +56,7 @@ module EarlScribe
         out.write("\e[s")
         total = @lines.size
         indices.reverse_each do |idx|
+          out.write("\e[u")
           lines_up = total - idx
           out.write("\e[#{lines_up}A\r\e[2K")
           out.write(@lines[idx].text.gsub(old_name, new_name))

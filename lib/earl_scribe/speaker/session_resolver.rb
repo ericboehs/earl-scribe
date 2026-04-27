@@ -43,10 +43,8 @@ module EarlScribe
       def resolve_label(cache_key, words, channel: nil)
         synchronize do
           cached = @cache[cache_key]
-          if cached.is_a?(String)
-            enqueue(cache_key, words, :verify, channel: channel)
-            return cached
-          end
+          return cached if cached.is_a?(String)
+
           enqueue(cache_key, words, :identify, channel: channel) unless cached == :pending
           nil
         end
