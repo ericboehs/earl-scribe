@@ -3,6 +3,15 @@ import AVFoundation
 import FluidAudio
 import Foundation
 
+// File-scoped flag for SIGINT/SIGTERM. The closure passed to signal(2) must be a
+// @convention(c) function pointer with no captures; using a free-standing global
+// variable lets the closure reference it without capturing any context.
+nonisolated(unsafe) private let earlScribeInterruptFlag: UnsafeMutablePointer<Bool> = {
+    let p = UnsafeMutablePointer<Bool>.allocate(capacity: 1)
+    p.initialize(to: false)
+    return p
+}()
+
 @main
 struct EarlScribeASR: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -15,6 +24,12 @@ struct EarlScribeASR: AsyncParsableCommand {
 
     @Flag(name: .long, help: "Read raw PCM from stdin until EOF.")
     var stdin: Bool = false
+
+    @Flag(name: .long, help: "Capture system audio (ScreenCaptureKit) + mic (AVAudioEngine) directly. No external audiotee/sox.")
+    var capture: Bool = false
+
+    @Flag(name: .long, inversion: .prefixedNo, help: "Include mic in --capture mode (default true).")
+    var mic: Bool = true
 
     @Option(name: .long, help: "Stdin sample format: f32_16k_mono or s16_48k_mono. Default f32_16k_mono.")
     var stdinFormat: String = "f32_16k_mono"
@@ -61,16 +76,15 @@ struct EarlScribeASR: AsyncParsableCommand {
             throw ExitCode.validationFailure
         }
 
-        if stdin && file != nil {
-            emit(["type": "error", "message": "pass either --file or --stdin, not both"])
-            throw ExitCode.validationFailure
-        }
-        if !stdin && file == nil {
-            emit(["type": "error", "message": "must pass --file <path> or --stdin"])
+        let modeCount = [stdin, file != nil, capture].filter { $0 }.count
+        if modeCount != 1 {
+            emit(["type": "error", "message": "pass exactly one of --file, --stdin, or --capture"])
             throw ExitCode.validationFailure
         }
 
-        if stdin {
+        if capture {
+            try await runCapture(chunkSize: chunkSize)
+        } else if stdin {
             try await runStdin(chunkSize: chunkSize)
         } else {
             try await runFile(chunkSize: chunkSize)
@@ -157,6 +171,116 @@ struct EarlScribeASR: AsyncParsableCommand {
         _ = try? diarizer?.finalizeSession()
         Self.drainPendingEous(force: true)
         let wall = Date().timeIntervalSince(runStart)
+        let rtfx = audioDurationSec / max(wall, 0.0001)
+
+        emit([
+            "type": "final",
+            "text": finalText,
+            "audio_duration_sec": audioDurationSec,
+            "wall_sec": wall,
+            "rtfx": rtfx
+        ])
+
+        await manager.cleanup()
+        diarizer?.cleanup()
+    }
+
+    private func runCapture(chunkSize: StreamingChunkSize) async throws {
+        let sampleRate: Double = 16_000
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                         sampleRate: sampleRate, channels: 1,
+                                         interleaved: false) else {
+            emit(["type": "error", "message": "failed to create capture audio format"])
+            throw ExitCode.failure
+        }
+
+        emit([
+            "type": "start",
+            "mode": "capture",
+            "chunk_ms": chunkMs,
+            "source_sample_rate": sampleRate,
+            "source_channels": 1,
+            "mic": mic
+        ])
+
+        let manager = StreamingEouAsrManager(chunkSize: chunkSize)
+        try await loadAndWireCallbacks(manager: manager)
+        let diarizer = try await loadDiarizerIfEnabled()
+        Self.setDiarizer(diarizer)
+        defer { Self.setDiarizer(nil) }
+
+        let mixer = CaptureMixer()
+        Self.setMixer(mixer)
+        defer { Self.setMixer(nil) }
+
+        let systemRecorder = SystemAudioRecorder()
+        let micRecorder = mic ? MicRecorder() : nil
+
+        systemRecorder.onChunk = { samples in mixer.ingestSys(samples) }
+        micRecorder?.onChunk = { samples in mixer.ingestMic(samples) }
+
+        // If mic is disabled, treat the system stream as already-paired by feeding
+        // an equal number of zero samples into the mic side. Keeps the mixer's
+        // zipper invariant simple.
+        if !mic {
+            systemRecorder.onChunk = { samples in
+                mixer.ingestMic([Float](repeating: 0, count: samples.count))
+                mixer.ingestSys(samples)
+            }
+        }
+
+        try await systemRecorder.start()
+        try micRecorder?.start()
+
+        let runStart = Date()
+        var totalFrames = 0
+        var samplesSinceFlush = 0
+
+        let interrupted = Self.installInterruptHandler()
+        defer { Self.uninstallInterruptHandler() }
+
+        while !interrupted.pointee {
+            let mixed = mixer.pullMixed()
+            if mixed.isEmpty {
+                try? await Task.sleep(nanoseconds: 20_000_000) // 20ms
+                continue
+            }
+
+            let bufferData = mixed.withUnsafeBufferPointer { Data(buffer: $0) }
+            guard let buffer = Self.makePcmBuffer(format: format,
+                                                  frames: AVAudioFrameCount(mixed.count),
+                                                  data: bufferData) else {
+                continue
+            }
+            let diarSamples = diarizer == nil ? [] : mixed
+            try await manager.appendAudio(buffer)
+            try Self.feedDiarizer(diarizer, samples: diarSamples, sourceRate: sampleRate)
+            totalFrames += mixed.count
+            samplesSinceFlush += mixed.count
+            Self.setAudioSec(Double(totalFrames) / sampleRate)
+            try await manager.processBufferedAudio()
+            _ = try? diarizer?.process()
+            Self.drainPendingEous(force: false)
+
+            if await manager.eouDetected {
+                await manager.reset()
+                samplesSinceFlush = 0
+            } else if Double(samplesSinceFlush) / sampleRate >= maxUtteranceSec {
+                await manager.injectSilence(2.0)
+                try await manager.processBufferedAudio()
+                if await manager.eouDetected { await manager.reset() }
+                samplesSinceFlush = 0
+            }
+        }
+
+        await systemRecorder.stop()
+        micRecorder?.stop()
+
+        let finalText = try await manager.finish()
+        _ = try? diarizer?.finalizeSession()
+        Self.drainPendingEous(force: true)
+        let wall = Date().timeIntervalSince(runStart)
+        let audioDurationSec = Double(totalFrames) / sampleRate
         let rtfx = audioDurationSec / max(wall, 0.0001)
 
         emit([
@@ -442,6 +566,8 @@ struct EarlScribeASR: AsyncParsableCommand {
     nonisolated(unsafe) private static var lastEouEndSec: Double = 0.0
     nonisolated(unsafe) private static var diarDebugEnabled: Bool = false
     nonisolated(unsafe) private static var currentDiarizer: SortformerDiarizer?
+    nonisolated(unsafe) private static var currentMixer: CaptureMixer?
+    nonisolated(unsafe) private static var interruptInstalled = false
 
     /// Bound on how long an EOU waits for Sortformer to catch up before emitting
     /// without a speaker tag. Keeps live latency bounded if Sortformer can't track
@@ -458,6 +584,25 @@ struct EarlScribeASR: AsyncParsableCommand {
     private static func setDiarizer(_ diarizer: SortformerDiarizer?) {
         pendingLock.lock(); defer { pendingLock.unlock() }
         currentDiarizer = diarizer
+    }
+
+    private static func setMixer(_ mixer: CaptureMixer?) {
+        pendingLock.lock(); defer { pendingLock.unlock() }
+        currentMixer = mixer
+    }
+
+    private static func installInterruptHandler() -> UnsafeMutablePointer<Bool> {
+        earlScribeInterruptFlag.pointee = false
+        if !interruptInstalled {
+            signal(SIGINT) { _ in earlScribeInterruptFlag.pointee = true }
+            signal(SIGTERM) { _ in earlScribeInterruptFlag.pointee = true }
+            interruptInstalled = true
+        }
+        return earlScribeInterruptFlag
+    }
+
+    private static func uninstallInterruptHandler() {
+        earlScribeInterruptFlag.pointee = false
     }
 
     private static func emitEouNow(text: String, startSec: Double, endSec: Double) {
@@ -512,6 +657,12 @@ struct EarlScribeASR: AsyncParsableCommand {
             let speaker = dominantSpeaker(diarizer: diarizer, startSec: eou.startSec, endSec: eou.endSec)
             if let speaker = speaker { payload["speaker"] = speaker }
             if diarDebugEnabled { logDiarDebug(diarizer: diarizer, eou: eou, speaker: speaker) }
+        }
+        pendingLock.lock()
+        let mixer = currentMixer
+        pendingLock.unlock()
+        if let mixer, let hint = mixer.channelHint(startSec: eou.startSec, endSec: eou.endSec) {
+            payload["channel_hint"] = hint
         }
         emitStatic(payload)
     }
