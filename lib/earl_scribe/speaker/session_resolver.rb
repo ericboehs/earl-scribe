@@ -40,10 +40,8 @@ module EarlScribe
         @worker = Thread.new { process_jobs(identifier, tmp_dir) }
       end
 
-      def resolve_label(cache_key, words, channel: nil, speaker_label: nil)
+      def resolve_label(cache_key, words, channel: nil)
         synchronize do
-          @speaker_labels ||= {}
-          @speaker_labels[cache_key] ||= speaker_label
           cached = @cache[cache_key]
           if cached.is_a?(String)
             enqueue(cache_key, words, :verify, channel: channel)
@@ -124,10 +122,6 @@ module EarlScribe
       end
 
       def speaker_label(cache_key)
-        @speaker_labels&.dig(cache_key) || infer_speaker_label(cache_key)
-      end
-
-      def infer_speaker_label(cache_key)
         (m = cache_key.match(SPEAKER_RE)) ? "#{m[1]}Speaker #{m[2]}" : cache_key
       end
     end

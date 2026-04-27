@@ -40,7 +40,7 @@ module EarlScribe
 
     test "asr_chunk_ms returns integer with default" do
       ENV.delete("EARL_SCRIBE_ASR_CHUNK_MS")
-      assert_equal 320, EarlScribe::Config.asr_chunk_ms
+      assert_equal 1280, EarlScribe::Config.asr_chunk_ms
     end
 
     test "llama_bin has default" do

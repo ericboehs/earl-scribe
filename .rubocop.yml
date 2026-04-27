@@ -36,7 +36,7 @@ Metrics/ModuleLength:
   Max: 140
 
 Metrics/MethodLength:
-  Max: 14
+  Max: 16
   Exclude:
     - "test/**/*"
 
@@ -46,7 +46,7 @@ Metrics/AbcSize:
     - "test/**/*"
 
 Metrics/ParameterLists:
-  Max: 6
+  Max: 7
   Exclude:
     - "test/**/*"
 

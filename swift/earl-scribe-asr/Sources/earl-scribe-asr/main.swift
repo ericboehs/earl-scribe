@@ -19,8 +19,8 @@ struct EarlScribeASR: AsyncParsableCommand {
     @Option(name: .long, help: "Stdin sample format: f32_16k_mono or s16_48k_mono. Default f32_16k_mono.")
     var stdinFormat: String = "f32_16k_mono"
 
-    @Option(name: .long, help: "Chunk size in ms: 160, 320, or 1280. Default 320.")
-    var chunkMs: Int = 320
+    @Option(name: .long, help: "Chunk size in ms: 160, 320, or 1280. Default 1280 (best accuracy; force-flush bounds live latency).")
+    var chunkMs: Int = 1280
 
     @Option(name: .long, help: "Simulated live feed size in ms (--file only). Default 1000.")
     var feedMs: Int = 1000
@@ -43,6 +43,9 @@ struct EarlScribeASR: AsyncParsableCommand {
 
     @Flag(name: .long, help: "Emit per-EOU diarizer state on stderr (frames, speaker count, dominant id).")
     var diarDebug: Bool = false
+
+    @Option(name: .long, help: "Sortformer model variant: fastV2, fastV2_1, balancedV2, balancedV2_1, highContextV2, highContextV2_1. Default highContextV2.")
+    var diarVariant: String = "highContextV2"
 
     mutating func run() async throws {
         _ = Self.wallStart  // force timer init at process start
@@ -345,14 +348,14 @@ struct EarlScribeASR: AsyncParsableCommand {
     private func loadDiarizerIfEnabled() async throws -> SortformerDiarizer? {
         guard diarize else { return nil }
         let loadStart = Date()
-        let config = SortformerConfig.balancedV2
+        let config = sortformerConfig(for: diarVariant)
         let timelineConfig = DiarizerTimelineConfig.sortformerDefault
         let diarizer = SortformerDiarizer(config: config, timelineConfig: timelineConfig)
         do {
             let models = try await SortformerModels.loadFromHuggingFace(config: config)
             diarizer.initialize(models: models)
             FileHandle.standardError.write(Data(
-                "diarizer_loaded balancedV2 elapsed_sec=\(Date().timeIntervalSince(loadStart))\n".utf8
+                "diarizer_loaded \(diarVariant) elapsed_sec=\(Date().timeIntervalSince(loadStart))\n".utf8
             ))
             return diarizer
         } catch {
@@ -360,6 +363,18 @@ struct EarlScribeASR: AsyncParsableCommand {
                 "Sortformer load failed: \(error.localizedDescription); diarization disabled\n".utf8
             ))
             return nil
+        }
+    }
+
+    private func sortformerConfig(for variant: String) -> SortformerConfig {
+        switch variant {
+        case "fastV2": return .fastV2
+        case "fastV2_1": return .fastV2_1
+        case "balancedV2": return .balancedV2
+        case "balancedV2_1": return .balancedV2_1
+        case "highContextV2": return .highContextV2
+        case "highContextV2_1": return .highContextV2_1
+        default: return .highContextV2
         }
     }
 

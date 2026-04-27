@@ -11,7 +11,7 @@ module EarlScribe
       CLOSE_STDERR_TIMEOUT = 2
 
       def initialize(channels: 1, sample_rate: 48_000, asr_bin: nil, chunk_ms: nil,
-                     diarize: true, diar_debug: false)
+                     diarize: true, diar_debug: false, diar_variant: nil)
         raise ArgumentError, "LocalStream requires mono (channels: 1)" unless channels == 1
 
         @channels = channels
@@ -20,6 +20,7 @@ module EarlScribe
         @chunk_ms = chunk_ms || Config.asr_chunk_ms
         @diarize = diarize
         @diar_debug = diar_debug
+        @diar_variant = diar_variant
         @parser = LocalStreamEventParser.new
         @subprocess_dead = false
         reset_handles
@@ -70,6 +71,7 @@ module EarlScribe
                "--chunk-ms", @chunk_ms.to_s]
         cmd << "--no-diarize" unless @diarize
         cmd << "--diar-debug" if @diar_debug
+        cmd += ["--diar-variant", @diar_variant] if @diar_variant
         cmd
       end
 

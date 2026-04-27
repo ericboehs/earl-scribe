@@ -11,7 +11,7 @@ module EarlScribe
       "AUDIO_SAMPLE_RATE" => "48000",
       "EARL_SCRIBE_AUDIOTEE_PATH" => "audiotee",
       "EARL_SCRIBE_ASR_BIN" => "earl-scribe-asr",
-      "EARL_SCRIBE_ASR_CHUNK_MS" => "320",
+      "EARL_SCRIBE_ASR_CHUNK_MS" => "1280",
       "EARL_SCRIBE_LLAMA_BIN" => "llama-cli",
       "EARL_SCRIBE_QWEN_MODEL" => nil,
       "EARL_SCRIBE_SUMMARY_INTERVAL_SEC" => "180",

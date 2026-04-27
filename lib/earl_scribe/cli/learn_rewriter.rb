@@ -15,7 +15,7 @@ module EarlScribe
       def self.rewrite_jsonl(path, updates)
         lines = File.readlines(path).map do |line|
           data = JSON.parse(line)
-          new_speaker = updates[data["cache_key"]] || updates[data["speaker"]]
+          new_speaker = updates[data["speaker"]]
           if new_speaker && data["speaker"] != new_speaker
             data["speaker"] = new_speaker
             JSON.generate(data)

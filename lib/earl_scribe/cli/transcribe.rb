@@ -86,7 +86,8 @@ module EarlScribe
           client = Transcription::LocalStream.new(channels: capture.channels,
                                                   sample_rate: capture.sample_rate,
                                                   diarize: opts[:diarize] != false,
-                                                  diar_debug: opts[:diar_debug] == true)
+                                                  diar_debug: opts[:diar_debug] == true,
+                                                  diar_variant: opts[:diar_variant])
           client.connect(->(result) { handle_result(result, resolver, ctx) })
           capture.start_streaming { |data| forward_chunk(client, resolver, data) }
         rescue Interrupt
@@ -146,32 +147,32 @@ module EarlScribe
       def self.resolve_speaker(seg, words, resolver)
         return unless (match = resolver && seg.speaker&.match(SPEAKER_RE))
 
-        cache_key = segment_cache_key(seg, match)
-        name = resolver.resolve_label(cache_key, words, channel: seg.channel, speaker_label: seg.speaker)
-        if name
+        cache_key = "#{match[1]}#{match[2]}"
+        if (name = resolver.resolve_label(cache_key, words, channel: seg.channel))
           seg.original_speaker = seg.speaker
           seg.speaker = name
         end
         cache_key
       end
 
-      def self.segment_cache_key(seg, match)
-        prefix = match[1]
-        ts = format("%.3f", seg.start_time.to_f)
-        "#{prefix}seg-#{ts}"
-      end
+      CACHE_KEY_RE = /\A((?:Ch\d+ )?)(\d+)\z/.freeze
 
       def self.correct_files(ctx, map)
         return unless map&.any?
 
-        LearnRewriter.rewrite({ jsonl_path: ctx.paths[:jsonl] }, map)
+        LearnRewriter.rewrite({ jsonl_path: ctx.paths[:jsonl] },
+                              map.transform_keys { |k| cache_key_to_speaker_label(k) })
+      end
+
+      def self.cache_key_to_speaker_label(key)
+        (m = key.match(CACHE_KEY_RE)) ? "#{m[1]}Speaker #{m[2]}" : key
       end
 
       private_class_method(*%i[resolve_device run_local run_cloud build_context warn_stereo_local
                                announce build_resolver build_summary_scheduler
                                stream_local stream_cloud teardown_local safe_step
                                forward_chunk handle_result
-                               write_segment resolve_speaker segment_cache_key correct_files])
+                               write_segment resolve_speaker correct_files cache_key_to_speaker_label])
     end
   end
 end

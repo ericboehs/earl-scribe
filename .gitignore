@@ -11,3 +11,4 @@ earl-scribe-*.m4a
 /vendor/audiotee/
 **/.build/
 .swiftpm/
+/test/fixtures/benchmark/

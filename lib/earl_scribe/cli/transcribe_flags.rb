@@ -10,7 +10,7 @@ module EarlScribe
                    "--diar-debug" => [:diar_debug, true],
                    "--summary" => [:summarize, true] }.freeze
       VALUE_FLAGS = %w[--device --mic --mic-gain-db --threshold --title
-                       --summary-interval-sec].freeze
+                       --summary-interval-sec --diar-variant].freeze
 
       def self.parse(argv)
         warn_unknown_flags(argv)
@@ -29,7 +29,8 @@ module EarlScribe
           mic: val["--mic"] || Config.audio_mic,
           mic_gain_db: val["--mic-gain-db"]&.to_f || Config.mic_gain_db,
           threshold: val["--threshold"]&.to_f,
-          title: val["--title"] }
+          title: val["--title"],
+          diar_variant: val["--diar-variant"] }
       end
 
       def self.summary_defaults(val)
