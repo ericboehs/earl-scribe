@@ -100,6 +100,8 @@ struct EarlScribeASR: AsyncParsableCommand {
         let manager = StreamingEouAsrManager(chunkSize: chunkSize)
         try await loadAndWireCallbacks(manager: manager)
         let diarizer = try await loadDiarizerIfEnabled()
+        Self.setDiarizer(diarizer)
+        defer { Self.setDiarizer(nil) }
 
         let feedFrames = AVAudioFrameCount(
             Double(feedMs) / 1000.0 * audioFile.processingFormat.sampleRate
@@ -128,6 +130,7 @@ struct EarlScribeASR: AsyncParsableCommand {
             Self.setAudioSec(audioClockSec)
             try await manager.processBufferedAudio()
             _ = try? diarizer?.process()
+            Self.drainPendingEous(force: false)
             samplesSinceFlush += Int(sliceFrames)
             if await manager.eouDetected {
                 await manager.reset()
@@ -140,7 +143,6 @@ struct EarlScribeASR: AsyncParsableCommand {
                 }
                 samplesSinceFlush = 0
             }
-            Self.drainPendingEous(diarizer: diarizer, force: false)
 
             if realtime {
                 let elapsed = Date().timeIntervalSince(runStart)
@@ -153,7 +155,7 @@ struct EarlScribeASR: AsyncParsableCommand {
 
         let finalText = try await manager.finish()
         _ = try? diarizer?.finalizeSession()
-        Self.drainPendingEous(diarizer: diarizer, force: true)
+        Self.drainPendingEous(force: true)
         let wall = Date().timeIntervalSince(runStart)
         let rtfx = audioDurationSec / max(wall, 0.0001)
 
@@ -209,6 +211,8 @@ struct EarlScribeASR: AsyncParsableCommand {
         let manager = StreamingEouAsrManager(chunkSize: chunkSize)
         try await loadAndWireCallbacks(manager: manager)
         let diarizer = try await loadDiarizerIfEnabled()
+        Self.setDiarizer(diarizer)
+        defer { Self.setDiarizer(nil) }
 
         let sliceFrames = AVAudioFrameCount(Double(stdinSliceMs) / 1000.0 * sampleRate)
         let sliceBytes = Int(sliceFrames) * bytesPerFrame
@@ -255,7 +259,6 @@ struct EarlScribeASR: AsyncParsableCommand {
                     }
                     samplesSinceFlush = 0
                 }
-                Self.drainPendingEous(diarizer: diarizer, force: false)
             }
         }
 
@@ -279,7 +282,7 @@ struct EarlScribeASR: AsyncParsableCommand {
 
         let finalText = try await manager.finish()
         _ = try? diarizer?.finalizeSession()
-        Self.drainPendingEous(diarizer: diarizer, force: true)
+        Self.drainPendingEous(force: true)
         let wall = Date().timeIntervalSince(runStart)
         let audioDurationSec = Double(totalFrames) / sampleRate
         let rtfx = audioDurationSec / max(wall, 0.0001)
@@ -340,7 +343,7 @@ struct EarlScribeASR: AsyncParsableCommand {
             await manager.setEouCallback { text in
                 let endSec = Self.readAudioSec()
                 let startSec = Self.consumeLastEouEnd(updatingTo: endSec)
-                Self.pushPendingEou(text: text, startSec: startSec, endSec: endSec)
+                Self.emitEouNow(text: text, startSec: startSec, endSec: endSec)
             }
         }
     }
@@ -438,6 +441,12 @@ struct EarlScribeASR: AsyncParsableCommand {
     nonisolated(unsafe) private static var pendingEous: [PendingEou] = []
     nonisolated(unsafe) private static var lastEouEndSec: Double = 0.0
     nonisolated(unsafe) private static var diarDebugEnabled: Bool = false
+    nonisolated(unsafe) private static var currentDiarizer: SortformerDiarizer?
+
+    /// Bound on how long an EOU waits for Sortformer to catch up before emitting
+    /// without a speaker tag. Keeps live latency bounded if Sortformer can't track
+    /// realtime audio.
+    private static let maxDiarWaitMs: Int = 3000
 
     private static func consumeLastEouEnd(updatingTo endSec: Double) -> Double {
         pendingLock.lock(); defer { pendingLock.unlock() }
@@ -446,38 +455,52 @@ struct EarlScribeASR: AsyncParsableCommand {
         return start
     }
 
-    private static func pushPendingEou(text: String, startSec: Double, endSec: Double) {
+    private static func setDiarizer(_ diarizer: SortformerDiarizer?) {
         pendingLock.lock(); defer { pendingLock.unlock() }
-        pendingEous.append(PendingEou(text: text, startSec: startSec, endSec: endSec, wallMs: wallMs()))
+        currentDiarizer = diarizer
     }
 
-    private static func drainPendingEous(diarizer: SortformerDiarizer?, force: Bool) {
+    private static func emitEouNow(text: String, startSec: Double, endSec: Double) {
         pendingLock.lock()
-        let snapshot = pendingEous
-        pendingEous = []
+        pendingEous.append(PendingEou(text: text, startSec: startSec, endSec: endSec, wallMs: wallMs()))
         pendingLock.unlock()
+        drainPendingEous(force: false)
+    }
 
-        var stillPending: [PendingEou] = []
-        for eou in snapshot {
-            if let diarizer = diarizer, !force {
-                let frameDur = Double(diarizer.timeline.config.frameDurationSeconds)
-                let processedSec = Double(diarizer.timeline.numFrames) * frameDur
-                if eou.endSec > processedSec + 0.5 {
-                    stillPending.append(eou)
-                    continue
-                }
+    private static func drainPendingEous(force: Bool) {
+        pendingLock.lock()
+        let diarizer = currentDiarizer
+        var emitNow: [PendingEou] = []
+        var keep: [PendingEou] = []
+        let nowMs = wallMs()
+        var holding = false
+        for eou in pendingEous {
+            if holding {
+                keep.append(eou)
+                continue
             }
-            emitEou(eou, diarizer: diarizer)
+            if force || diarizer == nil {
+                emitNow.append(eou)
+                continue
+            }
+            let frameDur = Double(diarizer!.timeline.config.frameDurationSeconds)
+            let processedSec = Double(diarizer!.timeline.numFrames) * frameDur
+            let waited = nowMs - eou.wallMs
+            if eou.endSec <= processedSec + 0.25 || waited >= maxDiarWaitMs {
+                emitNow.append(eou)
+            } else {
+                keep.append(eou)
+                holding = true
+            }
         }
-
-        if !stillPending.isEmpty {
-            pendingLock.lock()
-            pendingEous = stillPending + pendingEous
-            pendingLock.unlock()
+        pendingEous = keep
+        pendingLock.unlock()
+        for eou in emitNow {
+            emitOneEou(eou, diarizer: diarizer)
         }
     }
 
-    private static func emitEou(_ eou: PendingEou, diarizer: SortformerDiarizer?) {
+    private static func emitOneEou(_ eou: PendingEou, diarizer: SortformerDiarizer?) {
         var payload: [String: Any] = [
             "type": "eou",
             "text": eou.text,
