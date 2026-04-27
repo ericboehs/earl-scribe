@@ -10,13 +10,16 @@ module EarlScribe
       CLOSE_READER_TIMEOUT = 30
       CLOSE_STDERR_TIMEOUT = 2
 
-      def initialize(channels: 1, sample_rate: 48_000, asr_bin: nil, chunk_ms: nil)
+      def initialize(channels: 1, sample_rate: 48_000, asr_bin: nil, chunk_ms: nil,
+                     diarize: true, diar_debug: false)
         raise ArgumentError, "LocalStream requires mono (channels: 1)" unless channels == 1
 
         @channels = channels
         @sample_rate = sample_rate
         @asr_bin = asr_bin || Config.asr_bin
         @chunk_ms = chunk_ms || Config.asr_chunk_ms
+        @diarize = diarize
+        @diar_debug = diar_debug
         @parser = LocalStreamEventParser.new
         @subprocess_dead = false
         reset_handles
@@ -63,8 +66,11 @@ module EarlScribe
       end
 
       def build_command
-        [@asr_bin, "--stdin", "--stdin-format", stdin_format,
-         "--chunk-ms", @chunk_ms.to_s]
+        cmd = [@asr_bin, "--stdin", "--stdin-format", stdin_format,
+               "--chunk-ms", @chunk_ms.to_s]
+        cmd << "--no-diarize" unless @diarize
+        cmd << "--diar-debug" if @diar_debug
+        cmd
       end
 
       def stdin_format

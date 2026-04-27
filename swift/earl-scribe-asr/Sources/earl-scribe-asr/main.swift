@@ -41,8 +41,12 @@ struct EarlScribeASR: AsyncParsableCommand {
           help: "Run Sortformer diarization in parallel and tag EOU events with speaker IDs.")
     var diarize: Bool = true
 
+    @Flag(name: .long, help: "Emit per-EOU diarizer state on stderr (frames, speaker count, dominant id).")
+    var diarDebug: Bool = false
+
     mutating func run() async throws {
         _ = Self.wallStart  // force timer init at process start
+        Self.diarDebugEnabled = diarDebug
 
         let chunkSize: StreamingChunkSize
         switch chunkMs {
@@ -418,6 +422,7 @@ struct EarlScribeASR: AsyncParsableCommand {
     private static let pendingLock = NSLock()
     nonisolated(unsafe) private static var pendingEous: [PendingEou] = []
     nonisolated(unsafe) private static var lastEouEndSec: Double = 0.0
+    nonisolated(unsafe) private static var diarDebugEnabled: Bool = false
 
     private static func consumeLastEouEnd(updatingTo endSec: Double) -> Double {
         pendingLock.lock(); defer { pendingLock.unlock() }
@@ -466,35 +471,26 @@ struct EarlScribeASR: AsyncParsableCommand {
             "wall_ms": eou.wallMs
         ]
         if let diarizer = diarizer {
-            let info = diarizerInfo(diarizer: diarizer, startSec: eou.startSec, endSec: eou.endSec)
-            if let speaker = info.speaker { payload["speaker"] = speaker }
-            FileHandle.standardError.write(Data(
-                "diar [\(String(format: "%.1f", eou.startSec))-\(String(format: "%.1f", eou.endSec))] frames=\(info.numFrames) speakers=\(info.speakerCount) finalSegs=\(info.finalizedSegs) tentSegs=\(info.tentativeSegs) -> \(info.speaker.map(String.init) ?? "nil")\n".utf8
-            ))
+            let speaker = dominantSpeaker(diarizer: diarizer, startSec: eou.startSec, endSec: eou.endSec)
+            if let speaker = speaker { payload["speaker"] = speaker }
+            if diarDebugEnabled { logDiarDebug(diarizer: diarizer, eou: eou, speaker: speaker) }
         }
         emitStatic(payload)
     }
 
-    private struct DiarInfo {
-        let speaker: Int?
-        let numFrames: Int
-        let speakerCount: Int
-        let finalizedSegs: Int
-        let tentativeSegs: Int
-    }
-
-    private static func diarizerInfo(diarizer: SortformerDiarizer, startSec: Double, endSec: Double) -> DiarInfo {
+    private static func logDiarDebug(diarizer: SortformerDiarizer, eou: PendingEou, speaker: Int?) {
         let timeline = diarizer.timeline
-        let speaker = dominantSpeaker(diarizer: diarizer, startSec: startSec, endSec: endSec)
         var finalized = 0
         var tentative = 0
         for (_, sp) in timeline.speakers {
             finalized += sp.finalizedSegments.count
             tentative += sp.tentativeSegments.count
         }
-        return DiarInfo(speaker: speaker, numFrames: timeline.numFrames,
-                        speakerCount: timeline.speakers.count,
-                        finalizedSegs: finalized, tentativeSegs: tentative)
+        let line = "diar [\(String(format: "%.1f", eou.startSec))-\(String(format: "%.1f", eou.endSec))]" +
+                   " frames=\(timeline.numFrames) speakers=\(timeline.speakers.count)" +
+                   " finalSegs=\(finalized) tentSegs=\(tentative)" +
+                   " -> \(speaker.map(String.init) ?? "nil")\n"
+        FileHandle.standardError.write(Data(line.utf8))
     }
 
     // MARK: - JSONL emit

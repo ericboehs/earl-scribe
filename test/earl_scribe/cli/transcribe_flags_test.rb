@@ -36,6 +36,21 @@ module EarlScribe
         assert_nil opts[:threshold]
       end
 
+      test "diarize defaults to true" do
+        opts = TranscribeFlags.parse([])
+        assert_equal true, opts[:diarize]
+      end
+
+      test "--no-diarize disables diarization" do
+        opts = TranscribeFlags.parse(["--no-diarize"])
+        assert_equal false, opts[:diarize]
+      end
+
+      test "--diar-debug enables diarizer debug output" do
+        opts = TranscribeFlags.parse(["--diar-debug"])
+        assert_equal true, opts[:diar_debug]
+      end
+
       test "summary-interval-sec falls back to Config when omitted" do
         EarlScribe::Config.stub(:summary_interval_sec, 240) do
           opts = TranscribeFlags.parse([])

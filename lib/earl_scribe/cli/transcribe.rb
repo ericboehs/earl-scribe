@@ -79,12 +79,14 @@ module EarlScribe
         ) { |ck, old_n, new_n| ctx.term_display.reprint_speaker(ck, old_n, new_n) }
       end
 
-      def self.stream_local(ctx, resolver, _opts)
+      def self.stream_local(ctx, resolver, opts)
         client = nil
         begin
           capture = ctx.capture
           client = Transcription::LocalStream.new(channels: capture.channels,
-                                                  sample_rate: capture.sample_rate)
+                                                  sample_rate: capture.sample_rate,
+                                                  diarize: opts[:diarize] != false,
+                                                  diar_debug: opts[:diar_debug] == true)
           client.connect(->(result) { handle_result(result, resolver, ctx) })
           capture.start_streaming { |data| forward_chunk(client, resolver, data) }
         rescue Interrupt

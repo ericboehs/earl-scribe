@@ -6,8 +6,11 @@ module EarlScribe
       FLAG_MAP = { "--cloud" => [:cloud, true], "--stereo" => [:stereo, true],
                    "--no-identify" => [:identify, false], "--record" => [:record, true],
                    "--no-mic" => [:no_mic, true],
+                   "--no-diarize" => [:diarize, false],
+                   "--diar-debug" => [:diar_debug, true],
                    "--summary" => [:summarize, true] }.freeze
-      VALUE_FLAGS = %w[--device --mic --mic-gain-db --threshold --title --summary-interval-sec].freeze
+      VALUE_FLAGS = %w[--device --mic --mic-gain-db --threshold --title
+                       --summary-interval-sec].freeze
 
       def self.parse(argv)
         warn_unknown_flags(argv)
@@ -35,7 +38,8 @@ module EarlScribe
       end
 
       def self.boolean_defaults
-        { cloud: false, stereo: false, identify: true, record: false, no_mic: false }
+        { cloud: false, stereo: false, identify: true, record: false, no_mic: false,
+          diarize: true, diar_debug: false }
       end
 
       def self.warn_unknown_flags(argv)

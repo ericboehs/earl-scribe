@@ -28,6 +28,23 @@ module EarlScribe
         assert_equal "f32_16k_mono", client.stdin_format
       end
 
+      test "build_command appends --no-diarize when diarize is false" do
+        client = LocalStream.new(asr_bin: "/tmp/asr", diarize: false)
+        assert_includes client.build_command, "--no-diarize"
+      end
+
+      test "build_command omits diarization flags by default" do
+        client = LocalStream.new(asr_bin: "/tmp/asr")
+        cmd = client.build_command
+        assert_not_includes cmd, "--no-diarize"
+        assert_not_includes cmd, "--diar-debug"
+      end
+
+      test "build_command appends --diar-debug when diar_debug is true" do
+        client = LocalStream.new(asr_bin: "/tmp/asr", diar_debug: true)
+        assert_includes client.build_command, "--diar-debug"
+      end
+
       test "send_audio writes to subprocess stdin" do
         client = LocalStream.new(asr_bin: "/tmp/asr")
         stdin = StringIO.new
