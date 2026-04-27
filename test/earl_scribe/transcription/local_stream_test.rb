@@ -103,10 +103,10 @@ module EarlScribe
       end
 
       test "dispatches malformed events to logger at error severity" do
-        line = "not-json\n"
+        line = "{this is not json}\n"
         run_with_stdout(line) do |received, log_calls|
           assert_empty received
-          assert(log_calls[:error].any? { |m| m.include?("not-json") })
+          assert(log_calls[:error].any? { |m| m.include?("not json") })
         end
       end
 

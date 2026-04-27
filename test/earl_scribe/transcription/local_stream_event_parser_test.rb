@@ -60,9 +60,32 @@ module EarlScribe
 
       test "malformed JSON yields a malformed event" do
         parser = LocalStreamEventParser.new
-        events = parser.feed("not-json\n")
+        events = parser.feed("{not really json}\n")
         assert_equal :malformed, events.first[:event]
-        assert_equal "not-json", events.first[:data]["line"]
+        assert_includes events.first[:data]["line"], "not really json"
+      end
+
+      test "non-JSON noise prefixed before a valid object recovers the JSON" do
+        parser = LocalStreamEventParser.new
+        line = "E5RT something exploded.{\"type\":\"eou\",\"text\":\"hi\",\"audio_sec\":1}\n"
+        event = parser.feed(line).first
+        assert_equal :eou, event[:event]
+        assert_equal "hi", event[:result][:transcript]
+      end
+
+      test "lines with no JSON object yield a noise event" do
+        parser = LocalStreamEventParser.new
+        events = parser.feed("E5RT plain text noise\n")
+        assert_equal :noise, events.first[:event]
+      end
+
+      test "speaker field on eou flows through to the synthesized word" do
+        parser = LocalStreamEventParser.new
+        line = "{\"type\":\"eou\",\"text\":\"hi\",\"audio_sec\":1.0,\"start_sec\":0.5,\"speaker\":2}\n"
+        event = parser.feed(line).first
+        word = event[:result][:words].first
+        assert_equal 2, word["speaker"]
+        assert_in_delta 0.5, word["start"], 1e-6
       end
 
       test "non-eou control events pass through unchanged" do

@@ -37,6 +37,10 @@ struct EarlScribeASR: AsyncParsableCommand {
     @Option(name: .long, help: "Force-flush an utterance after this many seconds of unbroken speech. Default 4.0.")
     var maxUtteranceSec: Double = 4.0
 
+    @Flag(name: .long, inversion: .prefixedNo,
+          help: "Run Sortformer diarization in parallel and tag EOU events with speaker IDs.")
+    var diarize: Bool = true
+
     mutating func run() async throws {
         _ = Self.wallStart  // force timer init at process start
 
@@ -88,6 +92,7 @@ struct EarlScribeASR: AsyncParsableCommand {
 
         let manager = StreamingEouAsrManager(chunkSize: chunkSize)
         try await loadAndWireCallbacks(manager: manager)
+        let diarizer = try await loadDiarizerIfEnabled()
 
         let feedFrames = AVAudioFrameCount(
             Double(feedMs) / 1000.0 * audioFile.processingFormat.sampleRate
@@ -107,11 +112,15 @@ struct EarlScribeASR: AsyncParsableCommand {
             if slice.frameLength == 0 { break }
             let sliceFrames = slice.frameLength
 
+            let diarSamples = diarizer == nil ? [] : Self.floatsFromBuffer(slice)
+            let diarRate = format.sampleRate
             try await manager.appendAudio(slice)
+            try Self.feedDiarizer(diarizer, samples: diarSamples, sourceRate: diarRate)
             let sliceSec = Double(sliceFrames) / format.sampleRate
             audioClockSec += sliceSec
             Self.setAudioSec(audioClockSec)
             try await manager.processBufferedAudio()
+            _ = try? diarizer?.process()
             samplesSinceFlush += Int(sliceFrames)
             if await manager.eouDetected {
                 await manager.reset()
@@ -124,6 +133,7 @@ struct EarlScribeASR: AsyncParsableCommand {
                 }
                 samplesSinceFlush = 0
             }
+            Self.drainPendingEous(diarizer: diarizer, force: false)
 
             if realtime {
                 let elapsed = Date().timeIntervalSince(runStart)
@@ -135,6 +145,8 @@ struct EarlScribeASR: AsyncParsableCommand {
         }
 
         let finalText = try await manager.finish()
+        _ = try? diarizer?.finalizeSession()
+        Self.drainPendingEous(diarizer: diarizer, force: true)
         let wall = Date().timeIntervalSince(runStart)
         let rtfx = audioDurationSec / max(wall, 0.0001)
 
@@ -147,6 +159,7 @@ struct EarlScribeASR: AsyncParsableCommand {
         ])
 
         await manager.cleanup()
+        diarizer?.cleanup()
     }
 
     private func runStdin(chunkSize: StreamingChunkSize) async throws {
@@ -188,6 +201,7 @@ struct EarlScribeASR: AsyncParsableCommand {
 
         let manager = StreamingEouAsrManager(chunkSize: chunkSize)
         try await loadAndWireCallbacks(manager: manager)
+        let diarizer = try await loadDiarizerIfEnabled()
 
         let sliceFrames = AVAudioFrameCount(Double(stdinSliceMs) / 1000.0 * sampleRate)
         let sliceBytes = Int(sliceFrames) * bytesPerFrame
@@ -215,11 +229,14 @@ struct EarlScribeASR: AsyncParsableCommand {
                     emit(["type": "error", "message": "failed to allocate stdin buffer"])
                     throw ExitCode.failure
                 }
+                let diarSamples = diarizer == nil ? [] : Self.floatsFromBuffer(buffer)
                 try await manager.appendAudio(buffer)
+                try Self.feedDiarizer(diarizer, samples: diarSamples, sourceRate: sampleRate)
                 totalFrames += Int(sliceFrames)
                 samplesSinceFlush += Int(sliceFrames)
                 Self.setAudioSec(Double(totalFrames) / sampleRate)
                 try await manager.processBufferedAudio()
+                _ = try? diarizer?.process()
                 if await manager.eouDetected {
                     await manager.reset()
                     samplesSinceFlush = 0
@@ -231,6 +248,7 @@ struct EarlScribeASR: AsyncParsableCommand {
                     }
                     samplesSinceFlush = 0
                 }
+                Self.drainPendingEous(diarizer: diarizer, force: false)
             }
         }
 
@@ -239,10 +257,13 @@ struct EarlScribeASR: AsyncParsableCommand {
             if let buffer = Self.makePcmBuffer(
                 format: format, frames: tailFrames, data: leftover
             ) {
+                let diarSamples = diarizer == nil ? [] : Self.floatsFromBuffer(buffer)
                 try await manager.appendAudio(buffer)
+                try Self.feedDiarizer(diarizer, samples: diarSamples, sourceRate: sampleRate)
                 totalFrames += Int(tailFrames)
                 Self.setAudioSec(Double(totalFrames) / sampleRate)
                 try await manager.processBufferedAudio()
+                _ = try? diarizer?.process()
                 if await manager.eouDetected {
                     await manager.reset()
                 }
@@ -250,6 +271,8 @@ struct EarlScribeASR: AsyncParsableCommand {
         }
 
         let finalText = try await manager.finish()
+        _ = try? diarizer?.finalizeSession()
+        Self.drainPendingEous(diarizer: diarizer, force: true)
         let wall = Date().timeIntervalSince(runStart)
         let audioDurationSec = Double(totalFrames) / sampleRate
         let rtfx = audioDurationSec / max(wall, 0.0001)
@@ -263,6 +286,7 @@ struct EarlScribeASR: AsyncParsableCommand {
         ])
 
         await manager.cleanup()
+        diarizer?.cleanup()
     }
 
     private static func makePcmBuffer(
@@ -307,14 +331,170 @@ struct EarlScribeASR: AsyncParsableCommand {
                 ])
             }
             await manager.setEouCallback { text in
-                Self.emitStatic([
-                    "type": "eou",
-                    "text": text,
-                    "audio_sec": Self.readAudioSec(),
-                    "wall_ms": Self.wallMs()
-                ])
+                let endSec = Self.readAudioSec()
+                let startSec = Self.consumeLastEouEnd(updatingTo: endSec)
+                Self.pushPendingEou(text: text, startSec: startSec, endSec: endSec)
             }
         }
+    }
+
+    private func loadDiarizerIfEnabled() async throws -> SortformerDiarizer? {
+        guard diarize else { return nil }
+        let loadStart = Date()
+        let config = SortformerConfig.balancedV2
+        let timelineConfig = DiarizerTimelineConfig.sortformerDefault
+        let diarizer = SortformerDiarizer(config: config, timelineConfig: timelineConfig)
+        do {
+            let models = try await SortformerModels.loadFromHuggingFace(config: config)
+            diarizer.initialize(models: models)
+            FileHandle.standardError.write(Data(
+                "diarizer_loaded balancedV2 elapsed_sec=\(Date().timeIntervalSince(loadStart))\n".utf8
+            ))
+            return diarizer
+        } catch {
+            FileHandle.standardError.write(Data(
+                "Sortformer load failed: \(error.localizedDescription); diarization disabled\n".utf8
+            ))
+            return nil
+        }
+    }
+
+    private static func feedDiarizer(_ diarizer: SortformerDiarizer?, samples: [Float], sourceRate: Double) throws {
+        guard let diarizer = diarizer else { return }
+        try diarizer.addAudio(samples, sourceSampleRate: sourceRate)
+    }
+
+    private static func floatsFromBuffer(_ buffer: AVAudioPCMBuffer) -> [Float] {
+        let frames = Int(buffer.frameLength)
+        var samples = [Float](repeating: 0, count: frames)
+        if let ch = buffer.floatChannelData?[0] {
+            for i in 0..<frames { samples[i] = ch[i] }
+        } else if let ch = buffer.int16ChannelData?[0] {
+            for i in 0..<frames { samples[i] = Float(ch[i]) / 32768.0 }
+        }
+        return samples
+    }
+
+    private static func dominantSpeaker(diarizer: SortformerDiarizer, startSec: Double, endSec: Double) -> Int? {
+        let timeline = diarizer.timeline
+        let frameDur = Double(timeline.config.frameDurationSeconds)
+        var bestSpeaker: Int? = nil
+        var bestOverlap = 0.0
+        for (idx, speaker) in timeline.speakers {
+            var overlap = 0.0
+            for seg in speaker.finalizedSegments {
+                overlap += overlapSec(segStart: Double(seg.startFrame) * frameDur,
+                                      segEnd: Double(seg.endFrame) * frameDur,
+                                      startSec: startSec, endSec: endSec)
+            }
+            for seg in speaker.tentativeSegments {
+                overlap += overlapSec(segStart: Double(seg.startFrame) * frameDur,
+                                      segEnd: Double(seg.endFrame) * frameDur,
+                                      startSec: startSec, endSec: endSec)
+            }
+            if overlap > bestOverlap {
+                bestOverlap = overlap
+                bestSpeaker = idx
+            }
+        }
+        return bestSpeaker
+    }
+
+    private static func overlapSec(segStart: Double, segEnd: Double, startSec: Double, endSec: Double) -> Double {
+        let lo = max(segStart, startSec)
+        let hi = min(segEnd, endSec)
+        return hi > lo ? hi - lo : 0.0
+    }
+
+    // MARK: - Pending EOU queue
+
+    private struct PendingEou {
+        let text: String
+        let startSec: Double
+        let endSec: Double
+        let wallMs: Int
+    }
+
+    private static let pendingLock = NSLock()
+    nonisolated(unsafe) private static var pendingEous: [PendingEou] = []
+    nonisolated(unsafe) private static var lastEouEndSec: Double = 0.0
+
+    private static func consumeLastEouEnd(updatingTo endSec: Double) -> Double {
+        pendingLock.lock(); defer { pendingLock.unlock() }
+        let start = lastEouEndSec
+        lastEouEndSec = endSec
+        return start
+    }
+
+    private static func pushPendingEou(text: String, startSec: Double, endSec: Double) {
+        pendingLock.lock(); defer { pendingLock.unlock() }
+        pendingEous.append(PendingEou(text: text, startSec: startSec, endSec: endSec, wallMs: wallMs()))
+    }
+
+    private static func drainPendingEous(diarizer: SortformerDiarizer?, force: Bool) {
+        pendingLock.lock()
+        let snapshot = pendingEous
+        pendingEous = []
+        pendingLock.unlock()
+
+        var stillPending: [PendingEou] = []
+        for eou in snapshot {
+            if let diarizer = diarizer, !force {
+                let frameDur = Double(diarizer.timeline.config.frameDurationSeconds)
+                let processedSec = Double(diarizer.timeline.numFrames) * frameDur
+                if eou.endSec > processedSec + 0.5 {
+                    stillPending.append(eou)
+                    continue
+                }
+            }
+            emitEou(eou, diarizer: diarizer)
+        }
+
+        if !stillPending.isEmpty {
+            pendingLock.lock()
+            pendingEous = stillPending + pendingEous
+            pendingLock.unlock()
+        }
+    }
+
+    private static func emitEou(_ eou: PendingEou, diarizer: SortformerDiarizer?) {
+        var payload: [String: Any] = [
+            "type": "eou",
+            "text": eou.text,
+            "audio_sec": eou.endSec,
+            "start_sec": eou.startSec,
+            "wall_ms": eou.wallMs
+        ]
+        if let diarizer = diarizer {
+            let info = diarizerInfo(diarizer: diarizer, startSec: eou.startSec, endSec: eou.endSec)
+            if let speaker = info.speaker { payload["speaker"] = speaker }
+            FileHandle.standardError.write(Data(
+                "diar [\(String(format: "%.1f", eou.startSec))-\(String(format: "%.1f", eou.endSec))] frames=\(info.numFrames) speakers=\(info.speakerCount) finalSegs=\(info.finalizedSegs) tentSegs=\(info.tentativeSegs) -> \(info.speaker.map(String.init) ?? "nil")\n".utf8
+            ))
+        }
+        emitStatic(payload)
+    }
+
+    private struct DiarInfo {
+        let speaker: Int?
+        let numFrames: Int
+        let speakerCount: Int
+        let finalizedSegs: Int
+        let tentativeSegs: Int
+    }
+
+    private static func diarizerInfo(diarizer: SortformerDiarizer, startSec: Double, endSec: Double) -> DiarInfo {
+        let timeline = diarizer.timeline
+        let speaker = dominantSpeaker(diarizer: diarizer, startSec: startSec, endSec: endSec)
+        var finalized = 0
+        var tentative = 0
+        for (_, sp) in timeline.speakers {
+            finalized += sp.finalizedSegments.count
+            tentative += sp.tentativeSegments.count
+        }
+        return DiarInfo(speaker: speaker, numFrames: timeline.numFrames,
+                        speakerCount: timeline.speakers.count,
+                        finalizedSegs: finalized, tentativeSegs: tentative)
     }
 
     // MARK: - JSONL emit

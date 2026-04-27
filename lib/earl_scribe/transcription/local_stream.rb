@@ -112,6 +112,7 @@ module EarlScribe
         when :eou, :final then callback.call(event[:result]) if event[:result]
         when :error then dispatch_error(event[:data])
         when :malformed then log_malformed(event[:data]["line"].to_s)
+        when :noise then EarlScribe.logger.debug("earl-scribe-asr noise: #{event[:data]["line"][0, 200]}")
         end
       end
 
