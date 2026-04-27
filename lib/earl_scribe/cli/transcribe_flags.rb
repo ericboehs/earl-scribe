@@ -8,6 +8,7 @@ module EarlScribe
                    "--no-mic" => [:no_mic, true],
                    "--no-diarize" => [:diarize, false],
                    "--diar-debug" => [:diar_debug, true],
+                   "--native" => [:native, true],
                    "--summary" => [:summarize, true] }.freeze
       VALUE_FLAGS = %w[--device --mic --mic-gain-db --threshold --title
                        --summary-interval-sec --diar-variant].freeze
@@ -40,7 +41,7 @@ module EarlScribe
 
       def self.boolean_defaults
         { cloud: false, stereo: false, identify: true, record: false, no_mic: false,
-          diarize: true, diar_debug: false }
+          diarize: true, diar_debug: false, native: false }
       end
 
       def self.warn_unknown_flags(argv)

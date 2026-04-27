@@ -28,18 +28,24 @@ module EarlScribe
       end
 
       def self.extract_word_info(word)
-        [word["speaker"] || 0, word["punctuated_word"] || word["word"] || ""]
+        speaker = word["channel_hint"] == "mic" ? :me : (word["speaker"] || 0)
+        [speaker, word["punctuated_word"] || word["word"] || ""]
       end
 
       def self.to_result(segment, prefix)
-        speaker_id = segment.speaker_id
-        label = prefix ? "#{prefix} Speaker #{speaker_id}" : "Speaker #{speaker_id}"
         raw = segment.raw_words
-        Result.new(speaker: label, text: segment.words.join(" "),
+        Result.new(speaker: speaker_label(segment.speaker_id, prefix),
+                   text: segment.words.join(" "),
                    start_time: raw.first["start"], end_time: raw.last["end"])
       end
 
-      private_class_method :build_segments, :extract_word_info, :to_result
+      def self.speaker_label(speaker_id, prefix)
+        return ENV["EARL_SCRIBE_ME_NAME"] || "Me" if speaker_id == :me
+
+        prefix ? "#{prefix} Speaker #{speaker_id}" : "Speaker #{speaker_id}"
+      end
+
+      private_class_method :build_segments, :extract_word_info, :to_result, :speaker_label
     end
   end
 end

@@ -50,9 +50,9 @@ module EarlScribe
         return nil if text.empty?
 
         end_time = (data["audio_sec"] || @last_audio_sec).to_f
-        speaker = data["speaker"].to_i
-        start_override = data["start_sec"]&.to_f
-        record_segment(text, end_time, speaker: speaker, start_override: start_override)
+        record_segment(text, end_time, speaker: data["speaker"].to_i,
+                                       start_override: data["start_sec"]&.to_f,
+                                       channel_hint: data["channel_hint"])
       end
 
       def build_tail_result(data)
@@ -61,15 +61,17 @@ module EarlScribe
         return nil if tail.empty?
 
         end_time = (data["audio_duration_sec"] || @last_audio_sec).to_f
-        record_segment(tail, end_time, speaker: data["speaker"].to_i)
+        record_segment(tail, end_time, speaker: data["speaker"].to_i,
+                                       channel_hint: data["channel_hint"])
       end
 
-      def record_segment(text, end_time, speaker: 0, start_override: nil)
+      def record_segment(text, end_time, speaker: 0, start_override: nil, channel_hint: nil)
         start_time = start_override || @last_audio_sec
         @last_audio_sec = end_time
         @accumulated = @accumulated.empty? ? text.dup : "#{@accumulated} #{text}"
         word = { "speaker" => speaker, "punctuated_word" => text, "word" => text,
                  "start" => start_time, "end" => end_time }
+        word["channel_hint"] = channel_hint if channel_hint
         { channel_index: 0, transcript: text, words: [word] }
       end
 

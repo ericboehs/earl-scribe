@@ -85,6 +85,48 @@ module EarlScribe
         end
       end
 
+      test "--native skips capture, uses LocalStream wait_until_done" do
+        captured_kwargs = nil
+        waited = false
+        client = build_mock_client
+        client.define_singleton_method(:wait_until_done) { waited = true }
+        local_stub = lambda { |**kwargs|
+          captured_kwargs = kwargs
+          client
+        }
+        with_test_env(local_stub: local_stub) do
+          _stdout, stderr = capture_io { EarlScribe::Cli::Transcribe.run(["--native"]) }
+          assert_includes stderr, "native ScreenCaptureKit"
+        end
+        assert waited
+        assert_equal({ mic: true }, captured_kwargs[:native])
+      end
+
+      test "--native --no-mic propagates mic: false" do
+        captured = nil
+        client = build_mock_client
+        client.define_singleton_method(:wait_until_done) { nil }
+        local_stub = lambda { |**kwargs|
+          captured = kwargs
+          client
+        }
+        with_test_env(local_stub: local_stub) do
+          capture_io { EarlScribe::Cli::Transcribe.run(["--native", "--no-mic"]) }
+        end
+        assert_equal({ mic: false }, captured[:native])
+      end
+
+      test "--native interrupt is swallowed and teardown runs" do
+        client = build_mock_client
+        client.define_singleton_method(:wait_until_done) { raise Interrupt }
+        closed = false
+        client.define_singleton_method(:close) { closed = true }
+        with_test_env(local_stub: ->(**_) { client }) do
+          capture_io { EarlScribe::Cli::Transcribe.run(["--native"]) }
+        end
+        assert closed
+      end
+
       test "default with --device passes device name" do
         device = build_device
         resolved = nil

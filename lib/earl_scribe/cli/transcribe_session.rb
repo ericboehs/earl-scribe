@@ -18,10 +18,26 @@ module EarlScribe
       end
 
       def self.build_capture(device, options, channels, recording_path)
+        return NullCapture.new if options[:native]
         return build_device_capture(device, channels, recording_path) if device
         return build_audiotee_capture(channels, recording_path) if options[:no_mic]
 
         build_dual_capture(options[:mic], channels, recording_path, mic_gain_db: options[:mic_gain_db])
+      end
+
+      # No-op capture stub for --native mode where the Swift shim owns audio capture.
+      class NullCapture
+        def channels
+          1
+        end
+
+        def sample_rate
+          16_000
+        end
+
+        def start_streaming
+          nil
+        end
       end
 
       def self.build_device_capture(device, channels, recording_path)

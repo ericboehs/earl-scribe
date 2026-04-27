@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require_relative "local_stream_factory"
 require_relative "transcribe_banner"
 require_relative "transcribe_flags"
 require_relative "transcribe_mode"
@@ -29,11 +30,12 @@ module EarlScribe
         warn_stereo_local(opts)
         opts = opts.merge(stereo: false)
         ctx = build_context(device, opts, channels: 1)
-        resolver = build_resolver(ctx, opts)
+        resolver = opts[:native] ? nil : build_resolver(ctx, opts)
         scheduler = build_summary_scheduler(ctx, opts)
-        announce(ctx, device, opts, 1, resolver, "Parakeet EOU 120M (local)")
+        engine = opts[:native] ? "Parakeet EOU 120M (native ScreenCaptureKit)" : "Parakeet EOU 120M (local)"
+        announce(ctx, device, opts, 1, resolver, engine)
         scheduler&.start
-        stream_local(ctx, resolver, opts)
+        opts[:native] ? stream_native(ctx, opts) : stream_local(ctx, resolver, opts)
       ensure
         scheduler&.stop
       end
@@ -79,20 +81,21 @@ module EarlScribe
         ) { |ck, old_n, new_n| ctx.term_display.reprint_speaker(ck, old_n, new_n) }
       end
 
+      def self.stream_native(ctx, opts)
+        run_local_client(ctx, nil, LocalStreamFactory.native(opts), &:wait_until_done)
+      end
+
       def self.stream_local(ctx, resolver, opts)
-        client = nil
-        begin
-          capture = ctx.capture
-          client = Transcription::LocalStream.new(channels: capture.channels,
-                                                  sample_rate: capture.sample_rate,
-                                                  diarize: opts[:diarize] != false,
-                                                  diar_debug: opts[:diar_debug] == true,
-                                                  diar_variant: opts[:diar_variant])
-          client.connect(->(result) { handle_result(result, resolver, ctx) })
-          capture.start_streaming { |data| forward_chunk(client, resolver, data) }
-        rescue Interrupt
-          nil
+        run_local_client(ctx, resolver, LocalStreamFactory.from_capture(ctx.capture, opts)) do |client|
+          ctx.capture.start_streaming { |data| forward_chunk(client, resolver, data) }
         end
+      end
+
+      def self.run_local_client(ctx, resolver, client)
+        client.connect(->(result) { handle_result(result, resolver, ctx) })
+        yield client
+      rescue Interrupt
+        nil
       ensure
         teardown_local(ctx, client, resolver)
       end
@@ -110,18 +113,12 @@ module EarlScribe
       end
 
       def self.stream_cloud(api_key, ctx, resolver)
-        client = nil
-        begin
-          capture = ctx.capture
-          client = Transcription::Deepgram.new(api_key: api_key, channels: capture.channels,
-                                               sample_rate: capture.sample_rate)
-          client.connect(->(result) { handle_result(result, resolver, ctx) })
+        capture = ctx.capture
+        client = Transcription::Deepgram.new(api_key: api_key, channels: capture.channels,
+                                             sample_rate: capture.sample_rate)
+        run_local_client(ctx, resolver, client) do
           capture.start_streaming { |data| forward_chunk(client, resolver, data) }
-        rescue Interrupt
-          nil
         end
-      ensure
-        teardown_local(ctx, client, resolver)
       end
 
       def self.forward_chunk(client, resolver, data)
@@ -170,8 +167,8 @@ module EarlScribe
 
       private_class_method(*%i[resolve_device run_local run_cloud build_context warn_stereo_local
                                announce build_resolver build_summary_scheduler
-                               stream_local stream_cloud teardown_local safe_step
-                               forward_chunk handle_result
+                               stream_local stream_native stream_cloud run_local_client
+                               teardown_local safe_step forward_chunk handle_result
                                write_segment resolve_speaker correct_files cache_key_to_speaker_label])
     end
   end

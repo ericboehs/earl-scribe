@@ -49,6 +49,20 @@ module EarlScribe
         assert_nil event[:result]
       end
 
+      test "channel_hint flows through to synthesized word" do
+        parser = LocalStreamEventParser.new
+        line = "{\"type\":\"eou\",\"text\":\"hi\",\"audio_sec\":1,\"channel_hint\":\"mic\"}\n"
+        event = parser.feed(line).first
+        assert_equal "mic", event[:result][:words].first["channel_hint"]
+      end
+
+      test "missing channel_hint omits the key" do
+        parser = LocalStreamEventParser.new
+        line = "{\"type\":\"eou\",\"text\":\"hi\",\"audio_sec\":1}\n"
+        event = parser.feed(line).first
+        assert_not_includes event[:result][:words].first.keys, "channel_hint"
+      end
+
       test "missing audio_sec falls back to last cursor" do
         parser = LocalStreamEventParser.new
         parser.feed("{\"type\":\"eou\",\"text\":\"first\",\"audio_sec\":1.5}\n")

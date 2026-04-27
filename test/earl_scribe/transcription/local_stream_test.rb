@@ -40,9 +40,69 @@ module EarlScribe
         assert_not_includes cmd, "--diar-debug"
       end
 
-      test "build_command appends --diar-debug when diar_debug is true" do
-        client = LocalStream.new(asr_bin: "/tmp/asr", diar_debug: true)
+      test "build_command appends --diar-debug when diar[:debug] is true" do
+        client = LocalStream.new(asr_bin: "/tmp/asr", diar: { debug: true })
         assert_includes client.build_command, "--diar-debug"
+      end
+
+      test "build_command passes --diar-variant when diar[:variant] is set" do
+        client = LocalStream.new(asr_bin: "/tmp/asr", diar: { variant: "fastV2" })
+        cmd = client.build_command
+        assert_includes cmd, "--diar-variant"
+        assert_includes cmd, "fastV2"
+      end
+
+      test "build_command swaps stdin for --capture in native mode" do
+        client = LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true })
+        cmd = client.build_command
+        assert_includes cmd, "--capture"
+        assert_not_includes cmd, "--stdin"
+        assert_not_includes cmd, "--stdin-format"
+      end
+
+      test "build_command appends --no-mic in native mode without mic" do
+        client = LocalStream.new(asr_bin: "/tmp/asr", native: { mic: false })
+        assert_includes client.build_command, "--no-mic"
+      end
+
+      test "build_command omits --no-mic when native mic is on" do
+        client = LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true })
+        assert_not_includes client.build_command, "--no-mic"
+      end
+
+      test "native? reports the native flag" do
+        assert LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true }).native?
+        assert_not LocalStream.new(asr_bin: "/tmp/asr").native?
+      end
+
+      test "wait_until_done joins the wait thread" do
+        client = LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true })
+        joined = false
+        wait_thr = Object.new
+        wait_thr.define_singleton_method(:join) { joined = true }
+        wait_thr.define_singleton_method(:pid) { 12_345 }
+        client.instance_variable_set(:@wait_thr, wait_thr)
+        client.wait_until_done
+        assert joined
+      end
+
+      test "wait_until_done forwards Interrupt to subprocess and re-raises" do
+        client = LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true })
+        signaled = nil
+        join_count = 0
+        wait_thr = Object.new
+        wait_thr.define_singleton_method(:join) do
+          join_count += 1
+          raise Interrupt if join_count == 1
+        end
+        wait_thr.define_singleton_method(:pid) { 12_345 }
+        client.instance_variable_set(:@wait_thr, wait_thr)
+
+        Process.stub(:kill, ->(sig, _pid) { signaled = sig }) do
+          assert_raises(Interrupt) { client.wait_until_done }
+        end
+        assert_equal :INT, signaled
+        assert_equal 2, join_count
       end
 
       test "send_audio writes to subprocess stdin" do

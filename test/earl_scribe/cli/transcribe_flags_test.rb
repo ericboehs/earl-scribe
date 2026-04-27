@@ -102,6 +102,16 @@ module EarlScribe
         assert_equal true, opts[:no_mic]
       end
 
+      test "native flag defaults to false" do
+        opts = TranscribeFlags.parse([])
+        assert_equal false, opts[:native]
+      end
+
+      test "--native enables native capture" do
+        opts = TranscribeFlags.parse(["--native"])
+        assert_equal true, opts[:native]
+      end
+
       test "value flags after another flag are not flagged unknown" do
         _stdout, stderr = capture_io { TranscribeFlags.parse(["--mic", "Mic A", "--title", "Foo"]) }
         assert_not_includes stderr, "unknown flag"

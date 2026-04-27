@@ -11,7 +11,7 @@ module EarlScribe
       CLOSE_STDERR_TIMEOUT = 2
 
       def initialize(channels: 1, sample_rate: 48_000, asr_bin: nil, chunk_ms: nil,
-                     diarize: true, diar_debug: false, diar_variant: nil)
+                     diarize: true, diar: {}, native: nil)
         raise ArgumentError, "LocalStream requires mono (channels: 1)" unless channels == 1
 
         @channels = channels
@@ -19,11 +19,27 @@ module EarlScribe
         @asr_bin = asr_bin || Config.asr_bin
         @chunk_ms = chunk_ms || Config.asr_chunk_ms
         @diarize = diarize
-        @diar_debug = diar_debug
-        @diar_variant = diar_variant
+        @diar_debug = diar[:debug] == true
+        @diar_variant = diar[:variant]
+        @native = native ? { mic: native[:mic] != false } : nil
         @parser = LocalStreamEventParser.new
         @subprocess_dead = false
         reset_handles
+      end
+
+      def native?
+        !@native.nil?
+      end
+
+      # Block until the subprocess exits or the calling thread is interrupted.
+      # Native mode owns its own audio capture, so there's no audio loop on the
+      # Ruby side — we just wait for SIGINT and forward it to the shim.
+      def wait_until_done
+        @wait_thr&.join
+      rescue Interrupt
+        signal_subprocess(:INT)
+        @wait_thr&.join
+        raise
       end
 
       def connect(callback)
@@ -32,15 +48,16 @@ module EarlScribe
         [@stdin, @stdout, @stderr].each(&:binmode)
         @reader = Thread.new { read_loop(callback) }
         @stderr_drain = Thread.new { drain_stderr }
-      rescue Errno::ENOENT
-        raise Error, "earl-scribe-asr binary not found at #{@asr_bin.inspect}. " \
-                     "Build it with `bin/build-asr` and export EARL_SCRIBE_ASR_BIN."
-      rescue Errno::EACCES
-        raise Error, "earl-scribe-asr binary at #{@asr_bin.inspect} is not executable. " \
-                     "Rebuild via `bin/build-asr`."
-      rescue Errno::ENOEXEC
-        raise Error, "earl-scribe-asr binary at #{@asr_bin.inspect} is the wrong architecture. " \
-                     "Rebuild via `bin/build-asr`."
+      rescue Errno::ENOENT, Errno::EACCES, Errno::ENOEXEC => error
+        raise Error, "earl-scribe-asr binary at #{@asr_bin.inspect} #{spawn_error_reason(error)}. " \
+                     "Rebuild via `bin/build-asr` and set EARL_SCRIBE_ASR_BIN."
+      end
+
+      SPAWN_ERROR_REASONS = { Errno::ENOENT => "not found", Errno::EACCES => "is not executable",
+                              Errno::ENOEXEC => "is the wrong architecture" }.freeze
+
+      def spawn_error_reason(error)
+        SPAWN_ERROR_REASONS.fetch(error.class, "could not be spawned")
       end
 
       def send_audio(data)
@@ -67,12 +84,16 @@ module EarlScribe
       end
 
       def build_command
-        cmd = [@asr_bin, "--stdin", "--stdin-format", stdin_format,
-               "--chunk-ms", @chunk_ms.to_s]
-        cmd << "--no-diarize" unless @diarize
-        cmd << "--diar-debug" if @diar_debug
-        cmd += ["--diar-variant", @diar_variant] if @diar_variant
-        cmd
+        source = @native ? native_args : ["--stdin", "--stdin-format", stdin_format]
+        diar = []
+        diar << "--no-diarize" unless @diarize
+        diar << "--diar-debug" if @diar_debug
+        diar += ["--diar-variant", @diar_variant] if @diar_variant
+        [@asr_bin, "--chunk-ms", @chunk_ms.to_s, *source, *diar]
+      end
+
+      def native_args
+        @native[:mic] ? ["--capture"] : ["--capture", "--no-mic"]
       end
 
       def stdin_format
@@ -80,6 +101,13 @@ module EarlScribe
       end
 
       private
+
+      def signal_subprocess(sig)
+        pid = @wait_thr&.pid
+        Process.kill(sig, pid) if pid
+      rescue Errno::ESRCH, Errno::EINVAL
+        nil
+      end
 
       def notify_subprocess_dead
         return if @subprocess_dead
@@ -142,12 +170,7 @@ module EarlScribe
       end
 
       def reset_handles
-        @stdin = nil
-        @stdout = nil
-        @stderr = nil
-        @wait_thr = nil
-        @reader = nil
-        @stderr_drain = nil
+        @stdin = @stdout = @stderr = @wait_thr = @reader = @stderr_drain = nil
       end
     end
   end
