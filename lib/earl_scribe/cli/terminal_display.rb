@@ -6,6 +6,8 @@ require_relative "tracked_line"
 
 module EarlScribe
   module Cli
+    # Pretty-prints transcript segments to the terminal and supports retroactive
+    # speaker-name corrections by rewriting prior lines (when stdout is a TTY).
     class TerminalDisplay
       include Mutex_m
 
@@ -54,15 +56,15 @@ module EarlScribe
       def rewrite_lines(indices, old_name, new_name)
         out = output
         out.write("\e[s")
-        total = @lines.size
-        indices.reverse_each do |idx|
-          out.write("\e[u")
-          lines_up = total - idx
-          out.write("\e[#{lines_up}A\r\e[2K")
-          out.write(@lines[idx].text.gsub(old_name, new_name))
-        end
+        indices.reverse_each { |idx| rewrite_one(out, idx, old_name, new_name) }
         out.write("\e[u")
         out.flush
+      end
+
+      def rewrite_one(out, idx, old_name, new_name)
+        out.write("\e[u")
+        out.write("\e[#{@lines.size - idx}A\r\e[2K")
+        out.write(@lines[idx].text.gsub(old_name, new_name))
       end
 
       def update_tracked_lines(cache_key, old_name, new_name)

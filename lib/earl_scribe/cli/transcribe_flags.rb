@@ -2,6 +2,8 @@
 
 module EarlScribe
   module Cli
+    # Parses `earl-scribe transcribe` argv into an options hash, with defaults
+    # sourced from Config and warnings on unknown flags.
     module TranscribeFlags
       FLAG_MAP = { "--cloud" => [:cloud, true], "--stereo" => [:stereo, true],
                    "--no-identify" => [:identify, false], "--record" => [:record, true],

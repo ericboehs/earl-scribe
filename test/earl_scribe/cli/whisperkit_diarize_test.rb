@@ -117,6 +117,78 @@ module EarlScribe
         assert_equal original_jsonl, File.read(@paths[:jsonl])
       end
 
+      test "audio_source falls back to recording when wav missing" do
+        File.write(@paths[:wav].sub(".wav", ".m4a"), "fake-m4a")
+        paths = @paths.merge(recording: @paths[:wav].sub(".wav", ".m4a"))
+        assert_equal paths[:recording], WhisperkitDiarize.audio_source(paths)
+      end
+
+      test "audio_source returns nil when neither wav nor recording exists" do
+        assert_nil WhisperkitDiarize.audio_source(@paths)
+      end
+
+      test "audio_source prefers wav when both exist" do
+        File.write(@paths[:wav], "wav")
+        File.write(@paths[:wav].sub(".wav", ".m4a"), "m4a")
+        paths = @paths.merge(recording: @paths[:wav].sub(".wav", ".m4a"))
+        assert_equal @paths[:wav], WhisperkitDiarize.audio_source(paths)
+      end
+
+      test "consolidate is opt-out via consolidate: false" do
+        segments = [{ start: 0, end: 5, speaker: "Speaker A" }]
+        result = WhisperkitDiarize.consolidate(segments, "/tmp/x.m4a", consolidate: false)
+        assert_equal segments, result
+      end
+
+      test "consolidate returns segments unchanged when remap_labels yields nothing" do
+        segments = [{ start: 0, end: 5, speaker: "Speaker A" }]
+        WhisperkitConsolidate.stub(:remap_labels, {}) do
+          assert_equal segments, WhisperkitDiarize.consolidate(segments, "/tmp/x.m4a", {})
+        end
+      end
+
+      test "consolidate applies remap_labels to relabel speakers" do
+        segments = [{ start: 0, end: 5, speaker: "Speaker A" },
+                    { start: 5, end: 10, speaker: "Speaker B" }]
+        WhisperkitConsolidate.stub(:remap_labels, { "Speaker A" => "Allison" }) do
+          result = WhisperkitDiarize.consolidate(segments, "/tmp/x.m4a", {})
+          assert_equal "Allison", result[0][:speaker]
+          assert_equal "Speaker B", result[1][:speaker] # unmapped stays
+        end
+      end
+
+      test "segment? rejects metadata lines" do
+        assert_not WhisperkitDiarize.segment?({ "type" => "metadata" })
+      end
+
+      test "segment? rejects lines without start/end times" do
+        assert_not WhisperkitDiarize.segment?({ "speaker" => "x" })
+      end
+
+      test "segment? accepts segment lines" do
+        assert WhisperkitDiarize.segment?({ "start_time" => 0, "end_time" => 1, "speaker" => "x" })
+      end
+
+      test "safe_parse returns nil on malformed JSON" do
+        assert_nil WhisperkitDiarize.safe_parse("not json")
+      end
+
+      test "safe_parse parses valid JSON" do
+        assert_equal({ "a" => 1 }, WhisperkitDiarize.safe_parse('{"a":1}'))
+      end
+
+      test "speaker_at returns existing speaker when no diar segments overlap and list is empty" do
+        seg = { "start_time" => 0, "end_time" => 5, "speaker" => "kept" }
+        assert_equal "kept", WhisperkitDiarize.speaker_at(seg, [])
+      end
+
+      test "overlap_or_distance distinguishes overlap from gap before vs after" do
+        diar = { start: 5, end: 10 }
+        assert_in_delta(-3.0, WhisperkitDiarize.overlap_or_distance(diar, 0, 2), 1e-6) # before
+        assert_in_delta(-2.0, WhisperkitDiarize.overlap_or_distance(diar, 12, 15), 1e-6) # after
+        assert_in_delta(2.0, WhisperkitDiarize.overlap_or_distance(diar, 4, 7), 1e-6)    # overlap
+      end
+
       private
 
       def fake_status(success:)

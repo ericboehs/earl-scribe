@@ -104,16 +104,20 @@ module EarlScribe
 
       def merge_unmatched(embeddings, enrolled, clusters)
         unmatched = embeddings.reject { |k, _| enrolled.key?(k) }.to_a
-        merges = {}
-        unmatched.each_with_index do |(speaker_a, emb_a), i|
+        unmatched.each_with_index.with_object({}) do |((speaker_a, emb_a), i), merges|
           unmatched.drop(i + 1).each do |speaker_b, emb_b|
-            next if merges.key?(speaker_b) || merges.key?(speaker_a)
-            next if Speaker::VectorMath.cosine_similarity(emb_a, emb_b) < MERGE_THRESHOLD
-
-            merges[smaller(speaker_a, speaker_b, clusters)] = larger(speaker_a, speaker_b, clusters)
+            try_merge_pair(merges, [speaker_a, emb_a], [speaker_b, emb_b], clusters)
           end
         end
-        merges
+      end
+
+      def try_merge_pair(merges, pair_a, pair_b, clusters)
+        speaker_a, emb_a = pair_a
+        speaker_b, emb_b = pair_b
+        return if merges.key?(speaker_a) || merges.key?(speaker_b)
+        return if Speaker::VectorMath.cosine_similarity(emb_a, emb_b) < MERGE_THRESHOLD
+
+        merges[smaller(speaker_a, speaker_b, clusters)] = larger(speaker_a, speaker_b, clusters)
       end
 
       def smaller(speaker_a, speaker_b, clusters)

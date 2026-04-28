@@ -2,6 +2,8 @@
 
 module EarlScribe
   module Cli
+    # Computes channel count, banner labels, and capture-mode descriptors from
+    # parsed CLI options.
     module TranscribeMode
       def self.channels(opts)
         opts[:stereo] ? 2 : 1

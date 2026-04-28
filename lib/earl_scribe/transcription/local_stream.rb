@@ -3,30 +3,42 @@
 require "open3"
 
 require_relative "local_stream_command"
+require_relative "local_stream_lifecycle"
 require_relative "local_stream_pipe"
+require_relative "local_stream_reader"
 
 module EarlScribe
   module Transcription
+    # Drives a local ASR shim subprocess (FluidAudio Parakeet or WhisperKit)
+    # for streaming transcription. Owns subprocess lifecycle, audio piping,
+    # and clean teardown; delegates JSONL event reading to LocalStreamReader.
     class LocalStream
       attr_reader :channels, :sample_rate
 
       CLOSE_READER_TIMEOUT = 30
       CLOSE_STDERR_TIMEOUT = 2
 
-      def initialize(channels: 1, sample_rate: 48_000, asr_bin: nil, chunk_ms: nil,
-                     diar: {}, native: nil, engine: :fluidaudio)
+      def initialize(channels: 1, sample_rate: 48_000, engine: :fluidaudio, **opts)
         raise ArgumentError, "LocalStream requires mono (channels: 1)" unless channels == 1
 
         @channels = channels
         @sample_rate = sample_rate
         @engine = engine
-        @asr_bin = asr_bin || (whisperkit? ? Config.whisperkit_bin : Config.asr_bin)
-        @chunk_ms = chunk_ms || Config.asr_chunk_ms
-        @diar = diar
-        @native = native && { mic: native[:mic] != false, wav_path: native[:wav_path] }
+        configure(opts)
+        reset_handles
+      end
+
+      def configure(opts)
+        @asr_bin = opts[:asr_bin] || (whisperkit? ? Config.whisperkit_bin : Config.asr_bin)
+        @chunk_ms = opts[:chunk_ms] || Config.asr_chunk_ms
+        @diar = opts[:diar] || {}
+        @native = opts[:native] && native_opts(opts[:native])
         @parser = LocalStreamEventParser.new
         @subprocess_dead = false
-        reset_handles
+      end
+
+      def native_opts(native)
+        { mic: native[:mic] != false, wav_path: native[:wav_path] }
       end
 
       def whisperkit?
@@ -38,37 +50,22 @@ module EarlScribe
       end
 
       # Block until the subprocess exits or the calling thread is interrupted.
-      # Native mode owns its own audio capture, so there's no audio loop on the
-      # Ruby side — we just wait for SIGINT and forward it to the shim.
       def wait_until_done
         @wait_thr&.join
       rescue Interrupt
-        signal_subprocess(:INT)
+        LocalStreamLifecycle.signal_subprocess(@wait_thr, :INT)
         @wait_thr&.join
         raise
       end
 
       def connect(callback)
-        cmd = build_command
-        @shim_stdin, @stdout, @stderr, @wait_thr = Open3.popen3(*cmd)
-        [@shim_stdin, @stdout, @stderr].each(&:binmode)
-        @stdin = wrap_with_resample? ? LocalStreamPipe.open(@shim_stdin).tap { |p| @sox = p }.stdin : @shim_stdin
-        @reader = Thread.new { read_loop(callback) }
-        @stderr_drain = Thread.new { drain_stderr }
+        spawn_shim
+        wrap_stdin
+        start_reader_threads(callback)
       rescue Errno::ENOENT, Errno::EACCES, Errno::ENOEXEC => error
-        raise Error, "earl-scribe-asr binary at #{@asr_bin.inspect} #{spawn_error_reason(error)}. " \
+        reason = LocalStreamLifecycle.spawn_error_reason(error)
+        raise Error, "earl-scribe-asr binary at #{@asr_bin.inspect} #{reason}. " \
                      "Rebuild via `bin/build-asr` and set EARL_SCRIBE_ASR_BIN."
-      end
-
-      def wrap_with_resample?
-        whisperkit? && sample_rate != 16_000
-      end
-
-      SPAWN_ERROR_REASONS = { Errno::ENOENT => "not found", Errno::EACCES => "is not executable",
-                              Errno::ENOEXEC => "is the wrong architecture" }.freeze
-
-      def spawn_error_reason(error)
-        SPAWN_ERROR_REASONS.fetch(error.class, "could not be spawned")
       end
 
       def send_audio(data)
@@ -78,24 +75,15 @@ module EarlScribe
       end
 
       def close
-        if @sox
-          LocalStreamPipe.close(@sox, @shim_stdin)
-        else
-          @stdin&.close
-        end
-        warn_if_reader_hung(@reader && !@reader.join(CLOSE_READER_TIMEOUT))
+        close_input
+        hung = @reader && !@reader.join(CLOSE_READER_TIMEOUT)
+        LocalStreamLifecycle.warn_if_reader_hung(hung, CLOSE_READER_TIMEOUT)
         @stderr_drain&.join(CLOSE_STDERR_TIMEOUT)
         @stdout&.close
         @stderr&.close
-        check_exit_status
+        LocalStreamLifecycle.check_exit_status(@wait_thr)
       ensure
         reset_handles
-      end
-
-      def warn_if_reader_hung(hung)
-        return unless hung
-
-        EarlScribe.logger.warn("earl-scribe-asr reader did not exit within #{CLOSE_READER_TIMEOUT}s")
       end
 
       def build_command
@@ -105,71 +93,41 @@ module EarlScribe
 
       private
 
-      def signal_subprocess(sig)
-        pid = @wait_thr&.pid
-        Process.kill(sig, pid) if pid
-      rescue Errno::ESRCH, Errno::EINVAL
-        nil
+      def spawn_shim
+        @shim_stdin, @stdout, @stderr, @wait_thr = Open3.popen3(*build_command)
+        [@shim_stdin, @stdout, @stderr].each(&:binmode)
+      end
+
+      def wrap_stdin
+        @stdin = if wrap_with_resample?
+                   @sox = LocalStreamPipe.open(@shim_stdin)
+                   @sox.stdin
+                 else
+                   @shim_stdin
+                 end
+      end
+
+      def start_reader_threads(callback)
+        reader = LocalStreamReader.new(stdout: @stdout, stderr: @stderr, parser: @parser,
+                                       callback: callback,
+                                       on_subprocess_dead: -> { notify_subprocess_dead })
+        @reader = Thread.new { reader.read_loop }
+        @stderr_drain = Thread.new { reader.drain_stderr }
+      end
+
+      def wrap_with_resample?
+        whisperkit? && sample_rate != 16_000
+      end
+
+      def close_input
+        @sox ? LocalStreamPipe.close(@sox, @shim_stdin) : @stdin&.close
       end
 
       def notify_subprocess_dead
         return if @subprocess_dead
 
         @subprocess_dead = true
-        EarlScribe.logger.error("earl-scribe-asr subprocess died; dropping subsequent audio")
-      end
-
-      def check_exit_status
-        status = @wait_thr&.value
-        return unless status && !status.success?
-
-        EarlScribe.logger.error("earl-scribe-asr exited #{status.exitstatus || "via signal #{status.termsig}"}")
-      end
-
-      def read_loop(callback)
-        while (chunk = read_chunk)
-          @parser.feed(chunk).each { |event| dispatch(event, callback) }
-        end
-      rescue IOError
-        nil
-      rescue StandardError => error
-        EarlScribe.logger.error(
-          "earl-scribe-asr reader thread crashed: #{error.class}: #{error.message}\n" \
-          "#{error.backtrace.first(5).join("\n")}"
-        )
-        notify_subprocess_dead
-      end
-
-      def read_chunk
-        @stdout.readpartial(4096)
-      rescue EOFError
-        nil
-      end
-
-      def dispatch(event, callback)
-        case event[:event]
-        when :eou, :final, :confirmed then callback.call(event[:result]) if event[:result]
-        when :error then dispatch_error(event[:data])
-        when :malformed then log_malformed(event[:data]["line"].to_s)
-        when :noise then EarlScribe.logger.debug("earl-scribe-asr noise: #{event[:data]["line"][0, 200]}")
-        end
-      end
-
-      def dispatch_error(data)
-        EarlScribe.logger.error("earl-scribe-asr reported error: #{data["message"]}")
-        notify_subprocess_dead
-      end
-
-      def log_malformed(line)
-        EarlScribe.logger.error("earl-scribe-asr malformed line (#{line.bytesize}B): #{line[0, 120].inspect}")
-      end
-
-      def drain_stderr
-        @stderr.each_line do |line|
-          EarlScribe.logger.warn("earl-scribe-asr: #{line.chomp}")
-        end
-      rescue IOError
-        nil
+        LocalStreamLifecycle.log_subprocess_dead
       end
 
       def reset_handles

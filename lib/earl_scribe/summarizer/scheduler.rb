@@ -6,6 +6,8 @@ require "timeout"
 
 module EarlScribe
   module Summarizer
+    # Drives the rolling re-summary timer plus the SIGUSR1 trap, coalescing
+    # overlapping triggers and atomically rewriting the summary file.
     class Scheduler
       include MonitorMixin
 
@@ -115,18 +117,19 @@ module EarlScribe
 
       def write_atomic(content)
         require "fileutils"
-        dir = File.dirname(@output_path)
-        tmp = Tempfile.create(["summary", ".md"], dir)
-        begin
-          tmp.write(content)
-          tmp.flush
-          tmp.fsync
-          tmp.close
-          File.rename(tmp.path, @output_path)
-        rescue StandardError
-          FileUtils.rm_f(tmp.path)
-          raise
-        end
+        tmp = Tempfile.create(["summary", ".md"], File.dirname(@output_path))
+        flush_and_rename(tmp, content)
+      rescue StandardError
+        FileUtils.rm_f(tmp.path) if tmp
+        raise
+      end
+
+      def flush_and_rename(tmp, content)
+        tmp.write(content)
+        tmp.flush
+        tmp.fsync
+        tmp.close
+        File.rename(tmp.path, @output_path)
       end
     end
   end

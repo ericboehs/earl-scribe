@@ -4,6 +4,8 @@ require "json"
 
 module EarlScribe
   module Transcription
+    # Streaming JSONL parser for ASR shim output. Buffers partial lines across
+    # reads and maps engine event types (eou/final/confirmed) to Result hashes.
     class LocalStreamEventParser
       def initialize
         @last_audio_sec = 0.0

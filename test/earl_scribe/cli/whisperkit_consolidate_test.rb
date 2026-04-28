@@ -19,6 +19,71 @@ module EarlScribe
         assert_empty WhisperkitConsolidate.remap_labels([], "/tmp/x.m4a")
       end
 
+      def test_remap_labels_full_path_relabels_enrolled_and_merges_unmatched
+        segments = [
+          { start: 0, end: 5, speaker: "Speaker A" },     # enrolled (Allison)
+          { start: 5, end: 10, speaker: "Speaker B" },    # too brief — but with multi-segment goes through
+          { start: 10, end: 15, speaker: "Speaker C" },   # unmatched, but matches D
+          { start: 15, end: 18, speaker: "Speaker D" }    # unmatched, matches C
+        ]
+        store = Object.new
+        store.define_singleton_method(:list) { {} }
+        # Stub encoder.encode to return distinct embeddings
+        Speaker::Encoder.stub(:available?, true) do
+          Audio::SegmentExtractor.stub(:extract_wav, ->(*args) { args.last[:output_path] }) do
+            Speaker::Encoder.stub(:encode, lambda { |path|
+              case File.basename(path)
+              when /^Speaker_A-/ then [1.0, 0.0, 0.0]
+              when /^Speaker_B-/ then [0.0, 1.0, 0.0]
+              when /^Speaker_C-/, /^Speaker_D-/ then [0.0, 0.0, 1.0]
+              end
+            }) do
+              identifier = Object.new
+              identifier.define_singleton_method(:identify) do |emb|
+                emb == [1.0, 0.0, 0.0] ? ["Allison", 0.9] : [nil, 0.4]
+              end
+              Speaker::Identifier.stub(:new, identifier) do
+                remap = WhisperkitConsolidate.remap_labels(segments, "/tmp/x.m4a", store: store)
+                assert_equal "Allison", remap["Speaker A"]
+                # C and D have same embedding — one should merge into the other
+                merge_pairs = remap.select { |_, v| v.start_with?("Speaker") }
+                assert_equal 1, merge_pairs.size
+              end
+            end
+          end
+        end
+      end
+
+      def test_remap_labels_skips_clusters_below_min_total_sec
+        segments = [
+          { start: 0, end: 0.5, speaker: "Speaker A" } # 0.5s < 1.5s min
+        ]
+        Speaker::Encoder.stub(:available?, true) do
+          remap = WhisperkitConsolidate.remap_labels(segments, "/tmp/x.m4a")
+          assert_empty remap
+        end
+      end
+
+      def test_average_embeddings_returns_nil_when_no_segments_extract
+        Audio::SegmentExtractor.stub(:extract_wav, ->(*) { raise EarlScribe::Error, "ffmpeg failed" }) do
+          Dir.mktmpdir do |dir|
+            assert_raises(EarlScribe::Error) do
+              WhisperkitConsolidate.average_embeddings("/tmp/x.m4a", dir, "Speaker A",
+                                                       [{ start: 0, end: 5 }])
+            end
+          end
+        end
+      end
+
+      def test_encode_clusters_logs_and_continues_on_failure
+        clusters = { "Speaker A" => { top_segments: [{ start: 0, end: 5 }], total_sec: 5 } }
+        Audio::SegmentExtractor.stub(:extract_wav, ->(*) { raise EarlScribe::Error, "boom" }) do
+          # Should not raise — logger.warn captures the error
+          result = WhisperkitConsolidate.encode_clusters("/tmp/x.m4a", clusters)
+          assert_empty result
+        end
+      end
+
       def test_group_clusters_picks_top_segments_and_totals_duration
         segments = [
           { start: 0, end: 2, speaker: "Speaker A" },     # 2s

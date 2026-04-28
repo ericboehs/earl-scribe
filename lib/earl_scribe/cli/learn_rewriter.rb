@@ -13,17 +13,17 @@ module EarlScribe
       end
 
       def self.rewrite_jsonl(path, updates)
-        lines = File.readlines(path).map do |line|
-          data = JSON.parse(line)
-          new_speaker = updates[data["speaker"]]
-          if new_speaker && data["speaker"] != new_speaker
-            data["speaker"] = new_speaker
-            JSON.generate(data)
-          else
-            line.chomp
-          end
-        end
+        lines = File.readlines(path).map { |line| rewrite_line(line, updates) }
         File.write(path, lines.map { |l| "#{l}\n" }.join)
+      end
+
+      def self.rewrite_line(line, updates)
+        data = JSON.parse(line)
+        new_speaker = updates[data["speaker"]]
+        return line.chomp unless new_speaker && data["speaker"] != new_speaker
+
+        data["speaker"] = new_speaker
+        JSON.generate(data)
       end
 
       def self.rewrite_transcript(txt_path, jsonl_path)

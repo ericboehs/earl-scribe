@@ -9,11 +9,15 @@ require_relative "transcribe_session"
 require_relative "transcribe_summarizer"
 require_relative "terminal_display"
 require_relative "learn_rewriter"
+require_relative "transcribe_runner"
 require_relative "transcribe_speaker_writer"
 require_relative "whisperkit_diarize"
 
 module EarlScribe
   module Cli
+    # Top-level orchestration for the `earl-scribe transcribe` command. Dispatches
+    # between local (Parakeet/WhisperKit) and cloud (Deepgram) engines, manages
+    # session lifecycle, and runs the post-session diarization pass.
     module Transcribe
       def self.run(argv)
         opts = TranscribeFlags.parse(argv)
@@ -30,15 +34,24 @@ module EarlScribe
       def self.run_local(device, opts)
         warn_stereo_local(opts)
         opts = normalize_local_opts(opts)
-        ctx = build_context(device, opts, channels: 1)
-        resolver = local_resolver(ctx, opts)
-        scheduler = build_summary_scheduler(ctx, opts)
-        announce(ctx, device, opts, 1, resolver, engine_label(opts))
+        ctx, resolver, scheduler = build_local_session(device, opts)
         scheduler&.start
-        opts[:native] ? stream_native(ctx, opts) : stream_local(ctx, resolver, opts)
+        run_local_stream(ctx, resolver, opts)
         WhisperkitDiarize.run(ctx.paths, opts) if opts[:engine] == :whisperkit
       ensure
         scheduler&.stop
+      end
+
+      def self.build_local_session(device, opts)
+        ctx = build_context(device, opts, channels: 1)
+        resolver = local_resolver(ctx, opts)
+        announce(AnnounceArgs.new(ctx: ctx, device: device, opts: opts,
+                                  channels: 1, resolver: resolver, engine: engine_label(opts)))
+        [ctx, resolver, build_summary_scheduler(ctx, opts)]
+      end
+
+      def self.run_local_stream(ctx, resolver, opts)
+        opts[:native] ? TranscribeRunner.stream_native(ctx, opts) : TranscribeRunner.stream_local(ctx, resolver, opts)
       end
 
       def self.normalize_local_opts(opts)
@@ -46,7 +59,9 @@ module EarlScribe
       end
 
       def self.local_resolver(ctx, opts)
-        opts[:native] || opts[:engine] == :whisperkit ? nil : build_resolver(ctx, opts)
+        return nil if opts[:native]
+
+        build_resolver(ctx, opts)
       end
 
       ENGINE_LABELS = {
@@ -70,8 +85,9 @@ module EarlScribe
         channels = TranscribeMode.channels(opts)
         ctx = build_context(device, opts, channels: channels)
         resolver = build_resolver(ctx, opts)
-        announce(ctx, device, opts, channels, resolver, "Deepgram Nova-3")
-        stream_cloud(api_key, ctx, resolver)
+        announce(AnnounceArgs.new(ctx: ctx, device: device, opts: opts,
+                                  channels: channels, resolver: resolver, engine: "Deepgram Nova-3"))
+        TranscribeRunner.stream_cloud(api_key, ctx, resolver)
       end
 
       def self.build_context(device, opts, channels:)
@@ -86,12 +102,20 @@ module EarlScribe
         warn "warning: --stereo is ignored with the local backend (mono mix is required)"
       end
 
-      def self.announce(ctx, device, opts, channels, resolver, engine)
-        title = opts[:title] || ctx.meeting&.dig(:title)
-        TranscribeBanner.print(engine: engine, mode: TranscribeMode.describe(device, opts, channels),
-                               device_label: TranscribeMode.device_label_for_banner(device, opts),
-                               id_status: resolver ? "enabled" : "disabled",
-                               session: TranscribeSession.session_info(ctx, meeting_title: title))
+      AnnounceArgs = Struct.new(:ctx, :device, :opts, :channels, :resolver, :engine,
+                                keyword_init: true)
+
+      def self.announce(args)
+        TranscribeBanner.print(engine: args.engine,
+                               mode: TranscribeMode.describe(args.device, args.opts, args.channels),
+                               device_label: TranscribeMode.device_label_for_banner(args.device, args.opts),
+                               id_status: args.resolver ? "enabled" : "disabled",
+                               session: announce_session(args))
+      end
+
+      def self.announce_session(args)
+        title = args.opts[:title] || args.ctx.meeting&.dig(:title)
+        TranscribeSession.session_info(args.ctx, meeting_title: title)
       end
 
       def self.build_summary_scheduler(ctx, opts)
@@ -106,67 +130,10 @@ module EarlScribe
         ) { |ck, old_n, new_n| ctx.term_display.reprint_speaker(ck, old_n, new_n) }
       end
 
-      def self.stream_native(ctx, opts)
-        wav = opts[:rerun] ? ctx.paths[:wav] : nil
-        client = LocalStreamFactory.native(opts, wav_path: wav)
-        run_local_client(ctx, nil, client, &:wait_until_done)
-        Rerun.run(ctx.paths, opts) if opts[:rerun]
-      end
-
-      def self.stream_local(ctx, resolver, opts)
-        run_local_client(ctx, resolver, LocalStreamFactory.from_capture(ctx.capture, opts)) do |client|
-          ctx.capture.start_streaming { |data| forward_chunk(client, resolver, data) }
-        end
-      end
-
-      def self.run_local_client(ctx, resolver, client)
-        client.connect(->(result) { handle_result(result, resolver, ctx) })
-        yield client
-      rescue Interrupt
-        nil
-      ensure
-        teardown_local(ctx, client, resolver)
-      end
-
-      def self.teardown_local(ctx, client, resolver)
-        safe_step { client&.close }
-        safe_step { correct_files(ctx, resolver&.shutdown) }
-        safe_step { TranscribeSession.close_writers(ctx) }
-      end
-
-      def self.safe_step
-        yield
-      rescue StandardError => error
-        EarlScribe.logger.error("teardown step failed: #{error.class}: #{error.message}")
-      end
-
-      def self.stream_cloud(api_key, ctx, resolver)
-        capture = ctx.capture
-        client = Transcription::Deepgram.new(api_key: api_key, channels: capture.channels,
-                                             sample_rate: capture.sample_rate)
-        run_local_client(ctx, resolver, client) do
-          capture.start_streaming { |data| forward_chunk(client, resolver, data) }
-        end
-      end
-
-      def self.forward_chunk(client, resolver, data)
-        client.send_audio(data)
-        resolver&.pcm_buffer&.append(data)
-      end
-
-      def self.handle_result(result, resolver, ctx)
-        TranscribeSpeakerWriter.handle_result(result, resolver, ctx)
-      end
-
-      def self.correct_files(ctx, map)
-        TranscribeSpeakerWriter.correct_files(ctx, map)
-      end
-
       private_class_method(*%i[resolve_device run_local run_cloud build_context warn_stereo_local
-                               announce build_resolver build_summary_scheduler engine_label
-                               engine_label_key normalize_local_opts local_resolver
-                               stream_local stream_native stream_cloud run_local_client
-                               teardown_local safe_step forward_chunk handle_result correct_files])
+                               announce announce_session build_resolver build_summary_scheduler
+                               build_local_session run_local_stream
+                               engine_label engine_label_key normalize_local_opts local_resolver])
     end
   end
 end

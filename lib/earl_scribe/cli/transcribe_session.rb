@@ -2,6 +2,8 @@
 
 module EarlScribe
   module Cli
+    # Builds the per-session context (capture, transcript writer, JSONL writer,
+    # paths) and wires it together for the orchestrator.
     module TranscribeSession
       SessionContext = Struct.new(:capture, :writer, :jsonl, :meeting, :paths, :term_display, keyword_init: true)
 

@@ -12,11 +12,12 @@ module EarlScribe
       SPEAKER_RE = /\A((?:Ch\d+ )?)Speaker (\d+)\z/.freeze
       CACHE_KEY_RE = /\A((?:Ch\d+ )?)(\d+)\z/.freeze
 
-      def handle_result(result, resolver, ctx)
+      def handle_result(result, resolver, ctx, per_segment: false)
         prefix = ctx.capture.channels > 1 ? "Ch#{result[:channel_index]}" : nil
         Transcription::WordGrouper.group(result[:words], speaker_prefix: prefix).each do |seg|
           seg.channel = result[:channel_index]
-          write_segment(ctx, seg, resolve_speaker(seg, result[:words], resolver))
+          cache_key = resolve_speaker(seg, result[:words], resolver, per_segment: per_segment)
+          write_segment(ctx, seg, cache_key)
         end
       end
 
@@ -27,15 +28,28 @@ module EarlScribe
         ctx.jsonl.write_segment(seg)
       end
 
-      def resolve_speaker(seg, words, resolver)
-        return unless (match = resolver && seg.speaker&.match(SPEAKER_RE))
+      # When `per_segment` is true (WhisperKit engine — every chunk arrives
+      # labeled "Speaker 0"), mint a unique cache_key per segment so each one
+      # gets identified independently rather than collapsing into a single
+      # cached label.
+      def resolve_speaker(seg, words, resolver, per_segment: false)
+        return unless resolver
 
-        cache_key = "#{match[1]}#{match[2]}"
+        cache_key = build_cache_key(seg, per_segment: per_segment)
+        return unless cache_key
+
         if (name = resolver.resolve_label(cache_key, words, channel: seg.channel))
           seg.original_speaker = seg.speaker
           seg.speaker = name
         end
         cache_key
+      end
+
+      def build_cache_key(seg, per_segment:)
+        return "wk-#{seg.start_time}-#{seg.end_time}" if per_segment
+
+        match = seg.speaker&.match(SPEAKER_RE)
+        match ? "#{match[1]}#{match[2]}" : nil
       end
 
       def correct_files(ctx, map)
@@ -46,6 +60,8 @@ module EarlScribe
       end
 
       def cache_key_to_speaker_label(key)
+        return "Speaker 0" if key.start_with?("wk-")
+
         (m = key.match(CACHE_KEY_RE)) ? "#{m[1]}Speaker #{m[2]}" : key
       end
     end

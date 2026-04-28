@@ -4,6 +4,7 @@ require "open3"
 
 module EarlScribe
   module Summarizer
+    # Wraps a single-shot llama-cli invocation against a Qwen GGUF model.
     class Qwen
       DEFAULT_PROMPT = <<~PROMPT
         You are summarizing an in-progress meeting transcript. Produce a concise

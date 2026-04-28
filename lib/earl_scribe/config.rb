@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 module EarlScribe
+  # Centralizes ENV-driven configuration with defaults so the rest of the
+  # codebase doesn't reach into ENV directly.
   class Config
     DEFAULTS = {
       "DEEPGRAM_API_KEY" => nil,

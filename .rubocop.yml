@@ -18,35 +18,20 @@ Style/StringLiteralsInInterpolation:
 Layout/LineLength:
   Max: 120
 
+# Gemspec dev dependencies are fine — we use add_development_dependency
 Gemspec/DevelopmentDependencies:
   Enabled: false
 
+# Allow predicate-style naming (is_*, has_*)
 Naming/PredicateMethod:
   Enabled: false
 
-Style/Documentation:
-  Enabled: false
-
+# Test files naturally have large classes/methods/blocks
 Metrics/ClassLength:
-  Max: 140
   Exclude:
     - "test/**/*"
-
-Metrics/ModuleLength:
-  Max: 140
 
 Metrics/MethodLength:
-  Max: 16
-  Exclude:
-    - "test/**/*"
-
-Metrics/AbcSize:
-  Max: 20
-  Exclude:
-    - "test/**/*"
-
-Metrics/ParameterLists:
-  Max: 7
   Exclude:
     - "test/**/*"
 
@@ -55,6 +40,15 @@ Metrics/BlockLength:
     - "test/**/*"
     - "earl-scribe.gemspec"
 
+Metrics/AbcSize:
+  Exclude:
+    - "test/**/*"
+
+Metrics/ParameterLists:
+  Exclude:
+    - "test/**/*"
+
+# Test mocks commonly use empty blocks and unused arguments
 Lint/EmptyBlock:
   Exclude:
     - "test/**/*"
@@ -71,6 +65,7 @@ Lint/UnderscorePrefixedVariableName:
   Exclude:
     - "test/**/*"
 
+# Test helper metaprogramming requires semicolons and class reopening
 Style/Semicolon:
   Exclude:
     - "test/test_helper.rb"
@@ -83,5 +78,6 @@ Style/OneClassPerFile:
   Exclude:
     - "test/test_helper.rb"
 
+# Use descriptive `error` instead of short `e` in rescue blocks
 Naming/RescuedExceptionsVariableName:
   PreferredName: error

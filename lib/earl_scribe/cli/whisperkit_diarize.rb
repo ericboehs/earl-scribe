@@ -24,15 +24,15 @@ module EarlScribe
 
         warn "\nRunning diarization on captured audio..."
         rttm = run_diarize(audio, num_speakers: opts[:diar_num_speakers])
-        return unless rttm
+        segments = rttm ? parse_rttm(rttm) : []
+        apply_segments(paths, audio, segments, opts) unless segments.empty?
+        FileUtils.rm_f(rttm) if rttm && !ENV["EARL_SCRIBE_KEEP_RTTM"]
+      end
 
-        segments = parse_rttm(rttm)
-        return if segments.empty?
-
+      def apply_segments(paths, audio, segments, opts)
         consolidated = consolidate(segments, audio, opts)
         splice_jsonl(paths[:jsonl], consolidated)
         regenerate_txt(paths[:jsonl], paths[:transcript])
-        FileUtils.rm_f(rttm) unless ENV["EARL_SCRIBE_KEEP_RTTM"]
       end
 
       def consolidate(segments, audio, opts)

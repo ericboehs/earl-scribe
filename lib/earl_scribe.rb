@@ -34,7 +34,9 @@ require_relative "earl_scribe/calendar"
 require_relative "earl_scribe/cli/terminal_display"
 require_relative "earl_scribe/cli"
 
+# Top-level namespace for the earl-scribe meeting-transcription gem.
 module EarlScribe
+  # Base error class for all earl-scribe runtime failures.
   class Error < StandardError; end
 
   def self.config_root

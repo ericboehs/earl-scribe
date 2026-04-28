@@ -7,11 +7,15 @@ module EarlScribe
     module LocalStreamCommand
       module_function
 
-      def build(asr_bin:, chunk_ms:, diar:, native:, sample_rate:, engine:)
-        return whisperkit(asr_bin) if engine == :whisperkit
+      def build(opts)
+        return whisperkit(opts[:asr_bin]) if opts[:engine] == :whisperkit
 
-        source = native ? native_args(native) : ["--stdin", "--stdin-format", stdin_format(sample_rate)]
-        [asr_bin, "--chunk-ms", chunk_ms.to_s, *source, *diar_flags(diar)]
+        source = opts[:native] ? native_args(opts[:native]) : stdin_args(opts[:sample_rate])
+        [opts[:asr_bin], "--chunk-ms", opts[:chunk_ms].to_s, *source, *diar_flags(opts[:diar] || {})]
+      end
+
+      def stdin_args(sample_rate)
+        ["--stdin", "--stdin-format", stdin_format(sample_rate)]
       end
 
       def whisperkit(asr_bin)

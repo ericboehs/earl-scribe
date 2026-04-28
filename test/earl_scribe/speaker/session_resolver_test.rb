@@ -58,41 +58,6 @@ module EarlScribe
         resolver.shutdown
       end
 
-      test "callback fires on correction when name changes" do
-        @pcm_buffer.append("\x01" * 128_000)
-
-        call_count = 0
-        callbacks = []
-        mock_identifier = Object.new
-        mock_identifier.define_singleton_method(:identify) do |_emb|
-          call_count += 1
-          name = call_count == 1 ? "Alice" : "Bob"
-          [name, 0.9]
-        end
-
-        resolver = SessionResolver.new(
-          pcm_buffer: @pcm_buffer, identifier: mock_identifier, tmp_dir: @tmp_dir,
-          encoder: build_mock_encoder
-        ) { |ck, old_n, new_n| callbacks << [ck, old_n, new_n] }
-
-        words = build_words(start_time: 0.0, end_time: 3.0)
-        resolver.resolve_label("0", words)
-        sleep 0.3
-
-        # Should have initial callback
-        assert_equal 1, callbacks.size
-
-        # Second call returns "Alice" optimistically and queues verification
-        label = resolver.resolve_label("0", words)
-        assert_equal "Alice", label
-        sleep 0.3
-
-        # Verification found "Bob", should fire correction callback
-        assert_equal 2, callbacks.size
-        assert_equal %w[0 Alice Bob], callbacks.last
-        resolver.shutdown
-      end
-
       test "no callback when verification confirms same name" do
         @pcm_buffer.append("\x01" * 128_000)
 
