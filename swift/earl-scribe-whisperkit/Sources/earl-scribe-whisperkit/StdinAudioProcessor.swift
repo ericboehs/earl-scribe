@@ -63,6 +63,10 @@ final class StdinAudioProcessor: NSObject, AudioProcessing {
         lock.lock(); reading = false; lock.unlock()
     }
 
+    /// Set when stdin reaches EOF; the main process can poll `eofReached` to
+    /// shut down the AudioStreamTranscriber loop after the buffer drains.
+    private(set) var eofReached: Bool = false
+
     private func readLoop() {
         let frameSize = 1600          // 100ms at 16kHz
         let bytesNeeded = frameSize * MemoryLayout<Float>.size
@@ -75,10 +79,15 @@ final class StdinAudioProcessor: NSObject, AudioProcessing {
             if !stillReading { break }
 
             let need = bytesNeeded - buffer.count
-            guard let chunk = try? stdin.read(upToCount: need) else { break }
+            let chunk: Data
+            do {
+                chunk = try stdin.read(upToCount: need) ?? Data()
+            } catch {
+                break
+            }
             if chunk.isEmpty {
-                Thread.sleep(forTimeInterval: 0.05)
-                continue
+                lock.lock(); eofReached = true; lock.unlock()
+                break
             }
             buffer.append(chunk)
             guard buffer.count >= bytesNeeded else { continue }

@@ -12,6 +12,8 @@ module EarlScribe
       "EARL_SCRIBE_AUDIOTEE_PATH" => "audiotee",
       "EARL_SCRIBE_ASR_BIN" => "earl-scribe-asr",
       "EARL_SCRIBE_ASR_CHUNK_MS" => "1280",
+      "EARL_SCRIBE_WHISPERKIT_BIN" => "earl-scribe-whisperkit",
+      "EARL_SCRIBE_WHISPERKIT_MODEL" => nil,
       "EARL_SCRIBE_RERUN_CHUNK_MS" => "320",
       "EARL_SCRIBE_RERUN_MODEL" => "batch",
       "EARL_SCRIBE_LLAMA_BIN" => "llama-cli",
@@ -56,6 +58,14 @@ module EarlScribe
 
     def self.asr_bin
       get("EARL_SCRIBE_ASR_BIN")
+    end
+
+    def self.whisperkit_bin
+      get("EARL_SCRIBE_WHISPERKIT_BIN")
+    end
+
+    def self.whisperkit_model
+      get("EARL_SCRIBE_WHISPERKIT_MODEL")
     end
 
     def self.asr_chunk_ms

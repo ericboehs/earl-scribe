@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import ArgumentParser
 import WhisperKit
 
@@ -59,17 +60,32 @@ struct EarlScribeWhisperKit: AsyncParsableCommand {
             requiredSegmentsForConfirmation: confirmCount,
             silenceThreshold: silenceThreshold,
             useVAD: vad
-        ) { _, newState in
-            EarlScribeWhisperKit.emitState(newState, startedAt: started)
+        ) { oldState, newState in
+            EarlScribeWhisperKit.emitState(oldState: oldState, newState: newState)
         }
 
         Self.emit(["type": "start", "started_at": ISO8601DateFormatter().string(from: started)])
 
+        // After stdin EOF, give the transcriber a few seconds to drain the
+        // remaining buffer, then exit the process. AudioStreamTranscriber has
+        // no public "stop after current buffer" hook; this is the simplest
+        // shutdown that doesn't truncate the trailing segments.
+        Task { @Sendable [audio] in
+            while !audio.eofReached {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            Self.emit(["type": "stopped"])
+            Darwin.exit(0)
+        }
+
         try await transcriber.startStreamTranscription()
     }
 
-    static func emitState(_ state: AudioStreamTranscriber.State, startedAt: Date) {
-        for seg in state.confirmedSegments {
+    static func emitState(oldState: AudioStreamTranscriber.State,
+                          newState: AudioStreamTranscriber.State) {
+        let alreadyConfirmed = oldState.confirmedSegments.count
+        for seg in newState.confirmedSegments.dropFirst(alreadyConfirmed) {
             Self.emit([
                 "type": "confirmed",
                 "text": seg.text,
@@ -77,16 +93,8 @@ struct EarlScribeWhisperKit: AsyncParsableCommand {
                 "end_sec": seg.end
             ])
         }
-        for seg in state.unconfirmedSegments {
-            Self.emit([
-                "type": "unconfirmed",
-                "text": seg.text,
-                "start_sec": seg.start,
-                "end_sec": seg.end
-            ])
-        }
-        if !state.currentText.isEmpty {
-            Self.emit(["type": "partial", "text": state.currentText])
+        if newState.currentText != oldState.currentText, !newState.currentText.isEmpty {
+            Self.emit(["type": "partial", "text": newState.currentText])
         }
     }
 

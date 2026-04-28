@@ -39,6 +39,7 @@ module EarlScribe
         case kind
         when "eou" then event[:result] = build_eou_result(data)
         when "final" then event[:result] = build_tail_result(data)
+        when "confirmed" then event[:result] = build_confirmed_result(data)
         end
         event
       end
@@ -53,6 +54,15 @@ module EarlScribe
         record_segment(text, end_time, speaker: data["speaker"].to_i,
                                        start_override: data["start_sec"]&.to_f,
                                        channel_hint: data["channel_hint"])
+      end
+
+      def build_confirmed_result(data)
+        text = data["text"].to_s.strip
+        return nil if text.empty?
+
+        record_segment(text, data["end_sec"].to_f, speaker: 0,
+                                                   start_override: data["start_sec"]&.to_f,
+                                                   channel_hint: data["channel_hint"])
       end
 
       def build_tail_result(data)

@@ -11,12 +11,15 @@ module EarlScribe
       CLOSE_STDERR_TIMEOUT = 2
 
       def initialize(channels: 1, sample_rate: 48_000, asr_bin: nil, chunk_ms: nil,
-                     diarize: true, diar: {}, native: nil)
+                     diarize: true, diar: {}, native: nil, engine: :fluidaudio,
+                     whisperkit_model: nil)
         raise ArgumentError, "LocalStream requires mono (channels: 1)" unless channels == 1
 
         @channels = channels
         @sample_rate = sample_rate
-        @asr_bin = asr_bin || Config.asr_bin
+        @engine = engine
+        @whisperkit_model = whisperkit_model || Config.whisperkit_model
+        @asr_bin = asr_bin || (whisperkit? ? Config.whisperkit_bin : Config.asr_bin)
         @chunk_ms = chunk_ms || Config.asr_chunk_ms
         @diarize = diarize
         @diar_debug = diar[:debug] == true
@@ -26,6 +29,10 @@ module EarlScribe
         @parser = LocalStreamEventParser.new
         @subprocess_dead = false
         reset_handles
+      end
+
+      def whisperkit?
+        @engine == :whisperkit
       end
 
       def native?
@@ -85,6 +92,8 @@ module EarlScribe
       end
 
       def build_command
+        return whisperkit_command if whisperkit?
+
         source = @native ? native_args : ["--stdin", "--stdin-format", stdin_format]
         diar = []
         diar << "--no-diarize" unless @diarize
@@ -92,6 +101,12 @@ module EarlScribe
         diar += ["--diar-variant", @diar_variant] if @diar_variant
         diar += ["--diar-wait-ms", @diar_wait_ms.to_s] if @diar_wait_ms
         [@asr_bin, "--chunk-ms", @chunk_ms.to_s, *source, *diar]
+      end
+
+      def whisperkit_command
+        raise Error, "EARL_SCRIBE_WHISPERKIT_MODEL must be set to a WhisperKit model folder path" unless @whisperkit_model
+
+        [@asr_bin, "--model-path", @whisperkit_model]
       end
 
       def native_args
@@ -148,7 +163,7 @@ module EarlScribe
 
       def dispatch(event, callback)
         case event[:event]
-        when :eou, :final then callback.call(event[:result]) if event[:result]
+        when :eou, :final, :confirmed then callback.call(event[:result]) if event[:result]
         when :error then dispatch_error(event[:data])
         when :malformed then log_malformed(event[:data]["line"].to_s)
         when :noise then EarlScribe.logger.debug("earl-scribe-asr noise: #{event[:data]["line"][0, 200]}")

@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Pipes the benchmark WAV through the WhisperKit shim via Ruby's LocalStream
+# and prints confirmed segments to stdout. Smoke-test for the
+# engine: :whisperkit integration.
+
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "earl_scribe"
+
+WAV = ARGV[0] || File.expand_path("../test/fixtures/benchmark/eert-retro-60s.wav", __dir__)
+MODEL = ENV["EARL_SCRIBE_WHISPERKIT_MODEL"] ||
+        File.expand_path("~/Library/Application Support/MacWhisper/models/whisperkit/" \
+                         "models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3-v20240930")
+
+abort "WAV not found: #{WAV}" unless File.exist?(WAV)
+abort "Model not found: #{MODEL}" unless File.directory?(MODEL)
+
+ENV["EARL_SCRIBE_WHISPERKIT_MODEL"] = MODEL
+ENV["EARL_SCRIBE_WHISPERKIT_BIN"] = File.expand_path(
+  "../swift/earl-scribe-whisperkit/.build/release/earl-scribe-whisperkit", __dir__
+)
+
+stream = EarlScribe::Transcription::LocalStream.new(
+  channels: 1, sample_rate: 16_000, engine: :whisperkit
+)
+
+received = []
+stream.connect(->(result) {
+  received << result
+  warn "[#{format("%6.2f", result[:words][0]["start"])}] #{result[:transcript]}"
+})
+
+# Pipe ffmpeg's Float32 16k mono PCM into the shim
+ffmpeg = IO.popen(
+  ["ffmpeg", "-v", "error", "-i", WAV, "-f", "f32le", "-ac", "1", "-ar", "16000", "-"], "rb"
+)
+while (chunk = ffmpeg.read(64 * 1024))
+  stream.send_audio(chunk)
+end
+ffmpeg.close
+
+# Give the shim time to flush remaining segments
+sleep 5
+stream.close
+
+warn "\n--- got #{received.size} segments ---"
