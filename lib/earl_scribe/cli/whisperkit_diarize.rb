@@ -4,6 +4,8 @@ require "fileutils"
 require "json"
 require "open3"
 
+require_relative "whisperkit_consolidate"
+
 module EarlScribe
   module Cli
     # Post-session diarization pass for the WhisperKit engine. Runs
@@ -27,9 +29,20 @@ module EarlScribe
         segments = parse_rttm(rttm)
         return if segments.empty?
 
-        splice_jsonl(paths[:jsonl], segments)
+        consolidated = consolidate(segments, audio, opts)
+        splice_jsonl(paths[:jsonl], consolidated)
         regenerate_txt(paths[:jsonl], paths[:transcript])
         FileUtils.rm_f(rttm) unless ENV["EARL_SCRIBE_KEEP_RTTM"]
+      end
+
+      def consolidate(segments, audio, opts)
+        return segments if opts[:consolidate] == false
+
+        remap = WhisperkitConsolidate.remap_labels(segments, audio)
+        return segments if remap.empty?
+
+        warn "Consolidating #{remap.size} cluster(s): #{remap.map { |k, v| "#{k} -> #{v}" }.join(", ")}"
+        segments.map { |seg| seg.merge(speaker: remap[seg[:speaker]] || seg[:speaker]) }
       end
 
       def audio_source(paths)

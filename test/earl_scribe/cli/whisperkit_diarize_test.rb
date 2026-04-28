@@ -101,7 +101,7 @@ module EarlScribe
           File.write(rttm_path, rttm_content)
           ["", "", fake_status(success: true)]
         }) do
-          WhisperkitDiarize.run(@paths)
+          WhisperkitDiarize.run(@paths, consolidate: false)
         end
         assert_includes File.read(@paths[:transcript]), "Speaker A: hi"
       end
