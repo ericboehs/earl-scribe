@@ -2,6 +2,8 @@
 
 require "open3"
 
+require_relative "local_stream_command"
+
 module EarlScribe
   module Transcription
     class LocalStream
@@ -11,20 +13,15 @@ module EarlScribe
       CLOSE_STDERR_TIMEOUT = 2
 
       def initialize(channels: 1, sample_rate: 48_000, asr_bin: nil, chunk_ms: nil,
-                     diarize: true, diar: {}, native: nil, engine: :fluidaudio,
-                     whisperkit_model: nil)
+                     diar: {}, native: nil, engine: :fluidaudio)
         raise ArgumentError, "LocalStream requires mono (channels: 1)" unless channels == 1
 
         @channels = channels
         @sample_rate = sample_rate
         @engine = engine
-        @whisperkit_model = whisperkit_model || Config.whisperkit_model
         @asr_bin = asr_bin || (whisperkit? ? Config.whisperkit_bin : Config.asr_bin)
         @chunk_ms = chunk_ms || Config.asr_chunk_ms
-        @diarize = diarize
-        @diar_debug = diar[:debug] == true
-        @diar_variant = diar[:variant]
-        @diar_wait_ms = diar[:wait_ms]
+        @diar = diar
         @native = native && { mic: native[:mic] != false, wav_path: native[:wav_path] }
         @parser = LocalStreamEventParser.new
         @subprocess_dead = false
@@ -92,30 +89,8 @@ module EarlScribe
       end
 
       def build_command
-        return whisperkit_command if whisperkit?
-
-        source = @native ? native_args : ["--stdin", "--stdin-format", stdin_format]
-        diar = []
-        diar << "--no-diarize" unless @diarize
-        diar << "--diar-debug" if @diar_debug
-        diar += ["--diar-variant", @diar_variant] if @diar_variant
-        diar += ["--diar-wait-ms", @diar_wait_ms.to_s] if @diar_wait_ms
-        [@asr_bin, "--chunk-ms", @chunk_ms.to_s, *source, *diar]
-      end
-
-      def whisperkit_command
-        raise Error, "EARL_SCRIBE_WHISPERKIT_MODEL must be set to a WhisperKit model folder path" unless @whisperkit_model
-
-        [@asr_bin, "--model-path", @whisperkit_model]
-      end
-
-      def native_args
-        cmd = @native[:mic] ? ["--capture"] : ["--capture", "--no-mic"]
-        @native[:wav_path] ? cmd + ["--capture-wav", @native[:wav_path]] : cmd
-      end
-
-      def stdin_format
-        sample_rate == 16_000 ? "f32_16k_mono" : "s16_48k_mono"
+        LocalStreamCommand.build(asr_bin: @asr_bin, chunk_ms: @chunk_ms, diar: @diar,
+                                 native: @native, sample_rate: sample_rate, engine: @engine)
       end
 
       private

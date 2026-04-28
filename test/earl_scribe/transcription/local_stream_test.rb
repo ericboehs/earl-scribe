@@ -25,11 +25,11 @@ module EarlScribe
 
       test "build_command picks f32_16k_mono at 16k" do
         client = LocalStream.new(asr_bin: "/tmp/asr", sample_rate: 16_000)
-        assert_equal "f32_16k_mono", client.stdin_format
+        assert_includes client.build_command, "f32_16k_mono"
       end
 
       test "build_command appends --no-diarize when diarize is false" do
-        client = LocalStream.new(asr_bin: "/tmp/asr", diarize: false)
+        client = LocalStream.new(asr_bin: "/tmp/asr", diar: { enabled: false })
         assert_includes client.build_command, "--no-diarize"
       end
 
@@ -80,6 +80,29 @@ module EarlScribe
       test "native? reports the native flag" do
         assert LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true }).native?
         assert_not LocalStream.new(asr_bin: "/tmp/asr").native?
+      end
+
+      test "build_command in whisperkit engine uses --model-path with no chunk-ms or diar flags" do
+        Config.stub(:whisperkit_model, "/m") do
+          client = LocalStream.new(asr_bin: "/tmp/wk", engine: :whisperkit)
+          assert_equal ["/tmp/wk", "--model-path", "/m"], client.build_command
+        end
+      end
+
+      test "whisperkit engine raises when model is missing" do
+        Config.stub(:whisperkit_model, nil) do
+          client = LocalStream.new(asr_bin: "/tmp/wk", engine: :whisperkit)
+          assert_raises(EarlScribe::Error) { client.build_command }
+        end
+      end
+
+      test "whisperkit engine resolves binary from Config.whisperkit_bin" do
+        Config.stub(:whisperkit_bin, "/tmp/wkbin") do
+          Config.stub(:whisperkit_model, "/m") do
+            client = LocalStream.new(engine: :whisperkit)
+            assert_equal "/tmp/wkbin", client.build_command.first
+          end
+        end
       end
 
       test "wait_until_done joins the wait thread" do

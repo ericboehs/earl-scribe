@@ -9,12 +9,12 @@ require_relative "transcribe_session"
 require_relative "transcribe_summarizer"
 require_relative "terminal_display"
 require_relative "learn_rewriter"
+require_relative "transcribe_speaker_writer"
+require_relative "whisperkit_diarize"
 
 module EarlScribe
   module Cli
     module Transcribe
-      SPEAKER_RE = /\A((?:Ch\d+ )?)Speaker (\d+)\z/.freeze
-
       def self.run(argv)
         opts = TranscribeFlags.parse(argv)
         device = resolve_device(opts)
@@ -29,16 +29,40 @@ module EarlScribe
 
       def self.run_local(device, opts)
         warn_stereo_local(opts)
-        opts = opts.merge(stereo: false)
+        opts = normalize_local_opts(opts)
         ctx = build_context(device, opts, channels: 1)
-        resolver = opts[:native] ? nil : build_resolver(ctx, opts)
+        resolver = local_resolver(ctx, opts)
         scheduler = build_summary_scheduler(ctx, opts)
-        engine = opts[:native] ? "Parakeet EOU 120M (native ScreenCaptureKit)" : "Parakeet EOU 120M (local)"
-        announce(ctx, device, opts, 1, resolver, engine)
+        announce(ctx, device, opts, 1, resolver, engine_label(opts))
         scheduler&.start
         opts[:native] ? stream_native(ctx, opts) : stream_local(ctx, resolver, opts)
+        WhisperkitDiarize.run(ctx.paths, opts) if opts[:engine] == :whisperkit
       ensure
         scheduler&.stop
+      end
+
+      def self.normalize_local_opts(opts)
+        opts.merge(stereo: false, record: opts[:record] || opts[:engine] == :whisperkit)
+      end
+
+      def self.local_resolver(ctx, opts)
+        opts[:native] || opts[:engine] == :whisperkit ? nil : build_resolver(ctx, opts)
+      end
+
+      ENGINE_LABELS = {
+        whisperkit: "WhisperKit large-v3 (local)",
+        native: "Parakeet EOU 120M (native ScreenCaptureKit)",
+        local: "Parakeet EOU 120M (local)"
+      }.freeze
+
+      def self.engine_label(opts)
+        ENGINE_LABELS.fetch(engine_label_key(opts))
+      end
+
+      def self.engine_label_key(opts)
+        return :whisperkit if opts[:engine] == :whisperkit
+
+        opts[:native] ? :native : :local
       end
 
       def self.run_cloud(device, opts)
@@ -131,49 +155,18 @@ module EarlScribe
       end
 
       def self.handle_result(result, resolver, ctx)
-        prefix = ctx.capture.channels > 1 ? "Ch#{result[:channel_index]}" : nil
-        Transcription::WordGrouper.group(result[:words], speaker_prefix: prefix).each do |seg|
-          seg.channel = result[:channel_index]
-          write_segment(ctx, seg, resolve_speaker(seg, result[:words], resolver))
-        end
+        TranscribeSpeakerWriter.handle_result(result, resolver, ctx)
       end
-
-      def self.write_segment(ctx, seg, cache_key)
-        seg.cache_key = cache_key
-        ctx.term_display.commit(seg, cache_key: cache_key)
-        ctx.writer.write_line(seg.to_timestamped_s)
-        ctx.jsonl.write_segment(seg)
-      end
-
-      def self.resolve_speaker(seg, words, resolver)
-        return unless (match = resolver && seg.speaker&.match(SPEAKER_RE))
-
-        cache_key = "#{match[1]}#{match[2]}"
-        if (name = resolver.resolve_label(cache_key, words, channel: seg.channel))
-          seg.original_speaker = seg.speaker
-          seg.speaker = name
-        end
-        cache_key
-      end
-
-      CACHE_KEY_RE = /\A((?:Ch\d+ )?)(\d+)\z/.freeze
 
       def self.correct_files(ctx, map)
-        return unless map&.any?
-
-        LearnRewriter.rewrite({ jsonl_path: ctx.paths[:jsonl] },
-                              map.transform_keys { |k| cache_key_to_speaker_label(k) })
-      end
-
-      def self.cache_key_to_speaker_label(key)
-        (m = key.match(CACHE_KEY_RE)) ? "#{m[1]}Speaker #{m[2]}" : key
+        TranscribeSpeakerWriter.correct_files(ctx, map)
       end
 
       private_class_method(*%i[resolve_device run_local run_cloud build_context warn_stereo_local
-                               announce build_resolver build_summary_scheduler
+                               announce build_resolver build_summary_scheduler engine_label
+                               engine_label_key normalize_local_opts local_resolver
                                stream_local stream_native stream_cloud run_local_client
-                               teardown_local safe_step forward_chunk handle_result
-                               write_segment resolve_speaker correct_files cache_key_to_speaker_label])
+                               teardown_local safe_step forward_chunk handle_result correct_files])
     end
   end
 end

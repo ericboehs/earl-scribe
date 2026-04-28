@@ -12,7 +12,8 @@ module EarlScribe
                    "--rerun" => [:rerun, true],
                    "--summary" => [:summarize, true] }.freeze
       VALUE_FLAGS = %w[--device --mic --mic-gain-db --threshold --title
-                       --summary-interval-sec --diar-variant --diar-wait-ms].freeze
+                       --summary-interval-sec --diar-variant --diar-wait-ms
+                       --engine].freeze
 
       def self.parse(argv)
         warn_unknown_flags(argv)
@@ -29,7 +30,8 @@ module EarlScribe
       def self.capture_defaults(val)
         device_defaults(val).merge(diar_value_defaults(val),
                                    threshold: val["--threshold"]&.to_f,
-                                   title: val["--title"])
+                                   title: val["--title"],
+                                   engine: (val["--engine"] || "parakeet").to_sym)
       end
 
       def self.device_defaults(val)

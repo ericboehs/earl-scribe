@@ -49,6 +49,26 @@ module EarlScribe
         assert_nil event[:result]
       end
 
+      test "confirmed event produces a result with start/end and Speaker 0" do
+        parser = LocalStreamEventParser.new
+        line = "{\"type\":\"confirmed\",\"text\":\"hello world\",\"start_sec\":1.5,\"end_sec\":3.0}\n"
+        event = parser.feed(line).first
+
+        assert_equal :confirmed, event[:event]
+        word = event[:result][:words].first
+        assert_in_delta 1.5, word["start"], 1e-6
+        assert_in_delta 3.0, word["end"], 1e-6
+        assert_equal 0, word["speaker"]
+        assert_equal "hello world", event[:result][:transcript]
+      end
+
+      test "empty confirmed text does not produce a result" do
+        parser = LocalStreamEventParser.new
+        line = "{\"type\":\"confirmed\",\"text\":\"  \",\"start_sec\":0.0,\"end_sec\":1.0}\n"
+        event = parser.feed(line).first
+        assert_nil event[:result]
+      end
+
       test "channel_hint flows through to synthesized word" do
         parser = LocalStreamEventParser.new
         line = "{\"type\":\"eou\",\"text\":\"hi\",\"audio_sec\":1,\"channel_hint\":\"mic\"}\n"
