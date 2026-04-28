@@ -32,9 +32,29 @@ module EarlScribe
 
       def execute_pass(paths, opts)
         wall = Time.now
-        ok = run_file_pass(paths[:wav], paths, opts)
+        wav = normalize_wav(paths[:wav]) || paths[:wav]
+        ok = run_file_pass(wav, paths, opts)
+        FileUtils.rm_f(wav) if wav != paths[:wav]
         report_timing(wall, paths[:wav]) if ok
         ok ? finalize(paths) : restore_live(paths)
+      end
+
+      # ffmpeg-rewrite the captured WAV through a standard PCM container before
+      # the rerun reads it. AVAudioFile occasionally drops leading audio when
+      # parsing our hand-rolled RIFF; rewriting through ffmpeg produces a
+      # fully-conformant file that batch-mode reads cleanly. Copies the audio
+      # samples (-c:a copy) so it's effectively just a header rewrite.
+      def normalize_wav(wav)
+        return nil unless wav && File.exist?(wav)
+
+        normalized = "#{wav}.norm.wav"
+        _out, _err, status = Open3.capture3("ffmpeg", "-y", "-i", wav,
+                                            "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                                            normalized)
+        return normalized if status.success?
+
+        FileUtils.rm_f(normalized)
+        nil
       end
 
       def report_timing(start_time, wav)

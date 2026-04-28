@@ -55,7 +55,9 @@ module EarlScribe
         File.write(@paths[:jsonl], "{}\n")
         write_fake_wav(@paths[:wav])
         with_popen3_stub(out: "", err: "boom", success: false) do
-          capture_io { Rerun.run(@paths, {}) }
+          Open3.stub(:capture3, ->(*_) { ["", "", fake_status(success: false)] }) do
+            capture_io { Rerun.run(@paths, {}) }
+          end
         end
         assert_equal "live txt", File.read(@paths[:transcript])
         assert_not File.exist?(@paths[:transcript_live])
