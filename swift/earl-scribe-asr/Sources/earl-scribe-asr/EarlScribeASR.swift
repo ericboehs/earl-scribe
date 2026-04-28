@@ -230,8 +230,9 @@ struct EarlScribeASR: AsyncParsableCommand {
 
         var state = try TdtDecoderState()
         let result = try await asr.transcribe(fileURL, decoderState: &state)
-        let words = Self.groupTokensIntoWords(result.tokenTimings ?? [])
-        let sentences = Self.splitIntoSentences(words: words, fullText: result.text)
+        let words = Self.wordTimingsFromTokens(result.tokenTimings ?? [])
+        let sentences = Self.splitIntoSentences(fullText: result.text, words: words,
+                                                audioDurationSec: audioDurationSec)
         emitSentences(sentences, diarizer: diarizer)
 
         let wall = Date().timeIntervalSince(runStart)
@@ -276,13 +277,15 @@ struct EarlScribeASR: AsyncParsableCommand {
         _ = try? diarizer.finalizeSession()
     }
 
-    /// SentencePiece tokens prefixed with `▁` mark word boundaries. Group runs
-    /// of (non-▁) tokens into single words and carry over their timing.
-    static func groupTokensIntoWords(_ timings: [TokenTiming]) -> [BatchWord] {
+    /// Build word-level timings from FluidAudio's token-timings stream.
+    /// Parakeet TDT v2 emits tokens with a leading ASCII space marking the
+    /// start of a new word — anything else (sub-word continuation, punctuation)
+    /// glues onto the prior word.
+    static func wordTimingsFromTokens(_ timings: [TokenTiming]) -> [BatchWord] {
         var words: [BatchWord] = []
         for t in timings {
             let token = t.token
-            let starts = token.hasPrefix("\u{2581}")
+            let starts = token.hasPrefix(" ") || token.hasPrefix("\u{2581}")
             if starts || words.isEmpty {
                 let text = starts ? String(token.dropFirst()) : token
                 words.append(BatchWord(text: text, startSec: t.startTime, endSec: t.endTime))
@@ -294,31 +297,55 @@ struct EarlScribeASR: AsyncParsableCommand {
         return words
     }
 
-    /// Walk the punctuated transcript and split words into sentences at `. ! ?`
-    /// boundaries (or fall back to a single segment if no punctuation appears).
-    static func splitIntoSentences(words: [BatchWord], fullText: String) -> [BatchSentence] {
-        guard !words.isEmpty else { return [] }
-        var sentences: [BatchSentence] = []
-        var current: [BatchWord] = []
-        for word in words {
-            current.append(word)
-            if let last = word.text.last, ".!?".contains(last) {
-                sentences.append(makeSentence(current))
-                current = []
-            }
+    /// Split the punctuated transcript on `.!?` boundaries and align each
+    /// sentence to a real time range using word-level timings. We trust the
+    /// model's full text for punctuation/casing and only use the timings to
+    /// find when each sentence happened.
+    static func splitIntoSentences(fullText: String, words: [BatchWord],
+                                   audioDurationSec: Double) -> [BatchSentence] {
+        let textSentences = sentencePieces(fullText)
+        guard !textSentences.isEmpty else { return [] }
+        guard !words.isEmpty else {
+            return proportionalSentences(textSentences, audioDurationSec: audioDurationSec)
         }
-        if !current.isEmpty { sentences.append(makeSentence(current)) }
-        // If we wound up with one giant chunk, prefer the model's full text.
-        if sentences.count == 1, let s = sentences.first, !fullText.isEmpty {
-            sentences = [BatchSentence(text: fullText, startSec: s.startSec, endSec: s.endSec)]
-        }
-        return sentences
+        return alignSentencesToWords(textSentences, words: words)
     }
 
-    private static func makeSentence(_ words: [BatchWord]) -> BatchSentence {
-        BatchSentence(text: words.map(\.text).joined(separator: " "),
-                      startSec: words.first?.startSec ?? 0,
-                      endSec: words.last?.endSec ?? 0)
+    private static func sentencePieces(_ text: String) -> [String] {
+        let marker = "\u{0001}"
+        let split = text.replacingOccurrences(of: "([.!?])\\s+",
+                                              with: "$1\(marker)", options: .regularExpression)
+        return split.components(separatedBy: marker)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+    }
+
+    private static func alignSentencesToWords(_ sentences: [String],
+                                              words: [BatchWord]) -> [BatchSentence] {
+        var cursor = 0
+        var out: [BatchSentence] = []
+        for sentence in sentences {
+            let count = sentence.split { $0.isWhitespace }.count
+            let endIdx = min(cursor + count, words.count) - 1
+            guard endIdx >= cursor, endIdx >= 0 else { continue }
+            out.append(BatchSentence(text: sentence,
+                                     startSec: words[cursor].startSec,
+                                     endSec: words[endIdx].endSec))
+            cursor += count
+        }
+        return out
+    }
+
+    private static func proportionalSentences(_ sentences: [String],
+                                              audioDurationSec: Double) -> [BatchSentence] {
+        let totalChars = max(sentences.reduce(0) { $0 + $1.count }, 1)
+        var cursor = 0.0
+        return sentences.map { piece in
+            let share = Double(piece.count) / Double(totalChars) * audioDurationSec
+            let start = cursor
+            cursor += share
+            return BatchSentence(text: piece, startSec: start, endSec: cursor)
+        }
     }
 
     struct BatchWord { let text: String; let startSec: Double; let endSec: Double }
