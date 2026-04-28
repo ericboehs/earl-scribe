@@ -19,17 +19,30 @@ module EarlScribe
         assert_empty WhisperkitConsolidate.remap_labels([], "/tmp/x.m4a")
       end
 
-      def test_pick_representative_slice_takes_longest_per_speaker
+      def test_group_clusters_picks_top_segments_and_totals_duration
         segments = [
-          { start: 0, end: 2, speaker: "Speaker A" },
-          { start: 5, end: 12, speaker: "Speaker A" }, # longer
-          { start: 15, end: 18, speaker: "Speaker B" }
+          { start: 0, end: 2, speaker: "Speaker A" },     # 2s
+          { start: 5, end: 12, speaker: "Speaker A" },    # 7s — longest
+          { start: 14, end: 17, speaker: "Speaker A" },   # 3s
+          { start: 20, end: 21, speaker: "Speaker A" },   # 1s — should NOT be in top 3
+          { start: 25, end: 28, speaker: "Speaker B" }    # 3s
         ]
-        slices = WhisperkitConsolidate.pick_representative_slice(segments)
-        assert_equal 5, slices["Speaker A"][:start]
-        assert_in_delta 9.0, slices["Speaker A"][:total_sec], 1e-6
-        assert_equal 15, slices["Speaker B"][:start]
-        assert_in_delta 3.0, slices["Speaker B"][:total_sec], 1e-6
+        clusters = WhisperkitConsolidate.group_clusters(segments)
+        assert_equal 3, clusters["Speaker A"][:top_segments].size
+        assert_in_delta 13.0, clusters["Speaker A"][:total_sec], 1e-6
+        top = clusters["Speaker A"][:top_segments].first
+        assert_equal 7, top[:end] - top[:start]
+        assert_in_delta 3.0, clusters["Speaker B"][:total_sec], 1e-6
+      end
+
+      def test_average_vectors_returns_input_when_one
+        assert_equal [1.0, 2.0], WhisperkitConsolidate.average_vectors([[1.0, 2.0]])
+      end
+
+      def test_average_vectors_means_elementwise
+        result = WhisperkitConsolidate.average_vectors([[1.0, 0.0], [3.0, 4.0]])
+        assert_in_delta 2.0, result[0], 1e-6
+        assert_in_delta 2.0, result[1], 1e-6
       end
 
       def test_match_enrolled_relabels_when_identifier_matches
@@ -44,31 +57,25 @@ module EarlScribe
 
       def test_merge_unmatched_collapses_similar_clusters_to_larger
         embeddings = { "Speaker A" => [1.0, 0.0], "Speaker D" => [1.0, 0.001] }
-        cluster_audio = {
-          "Speaker A" => { start: 0, end: 10, total_sec: 10 },
-          "Speaker D" => { start: 20, end: 22, total_sec: 2 }
+        clusters = {
+          "Speaker A" => { total_sec: 10 },
+          "Speaker D" => { total_sec: 2 }
         }
-        merges = WhisperkitConsolidate.merge_unmatched(embeddings, {}, cluster_audio)
+        merges = WhisperkitConsolidate.merge_unmatched(embeddings, {}, clusters)
         assert_equal({ "Speaker D" => "Speaker A" }, merges)
       end
 
       def test_merge_unmatched_skips_dissimilar_clusters
         embeddings = { "Speaker A" => [1.0, 0.0], "Speaker B" => [0.0, 1.0] }
-        cluster_audio = {
-          "Speaker A" => { start: 0, end: 5, total_sec: 5 },
-          "Speaker B" => { start: 5, end: 8, total_sec: 3 }
-        }
-        assert_empty WhisperkitConsolidate.merge_unmatched(embeddings, {}, cluster_audio)
+        clusters = { "Speaker A" => { total_sec: 5 }, "Speaker B" => { total_sec: 3 } }
+        assert_empty WhisperkitConsolidate.merge_unmatched(embeddings, {}, clusters)
       end
 
       def test_merge_unmatched_skips_already_enrolled
         embeddings = { "Speaker A" => [1.0, 0.0], "Speaker D" => [1.0, 0.001] }
-        cluster_audio = {
-          "Speaker A" => { start: 0, end: 10, total_sec: 10 },
-          "Speaker D" => { start: 20, end: 22, total_sec: 2 }
-        }
+        clusters = { "Speaker A" => { total_sec: 10 }, "Speaker D" => { total_sec: 2 } }
         enrolled = { "Speaker A" => "Allison" }
-        assert_empty WhisperkitConsolidate.merge_unmatched(embeddings, enrolled, cluster_audio)
+        assert_empty WhisperkitConsolidate.merge_unmatched(embeddings, enrolled, clusters)
       end
     end
   end
