@@ -25,7 +25,12 @@ final class WavWriter {
     func append(_ samples: [Float]) {
         guard !samples.isEmpty else { return }
         lock.lock(); defer { lock.unlock() }
-        let data = samples.withUnsafeBufferPointer { Data(buffer: $0) }
+        var int16Samples = [Int16](repeating: 0, count: samples.count)
+        for i in 0..<samples.count {
+            let v = max(-1.0, min(1.0, samples[i]))
+            int16Samples[i] = Int16(v * 32_767.0)
+        }
+        let data = int16Samples.withUnsafeBufferPointer { Data(buffer: $0) }
         try? handle.write(contentsOf: data)
         samplesWritten &+= UInt32(samples.count)
     }
@@ -35,7 +40,7 @@ final class WavWriter {
     /// patched header can race ahead of the audio bytes still in OS buffers.
     func close() {
         lock.lock(); defer { lock.unlock() }
-        let dataBytes = samplesWritten * 4 // Float32
+        let dataBytes = samplesWritten * 2 // Int16
         let riffSize = 36 + dataBytes
         try? handle.seek(toOffset: 4)
         try? handle.write(contentsOf: u32le(riffSize))
@@ -52,12 +57,12 @@ final class WavWriter {
         header.append(Data("WAVE".utf8))
         header.append(Data("fmt ".utf8))
         header.append(u32le(16))                             // fmt chunk size
-        header.append(u16le(3))                              // format: IEEE float
+        header.append(u16le(1))                              // format: PCM (Int16)
         header.append(u16le(1))                              // channels
         header.append(u32le(sampleRate))
-        header.append(u32le(sampleRate * 4))                 // byte rate
-        header.append(u16le(4))                              // block align (1ch * 4B)
-        header.append(u16le(32))                             // bits per sample
+        header.append(u32le(sampleRate * 2))                 // byte rate
+        header.append(u16le(2))                              // block align (1ch * 2B)
+        header.append(u16le(16))                             // bits per sample
         header.append(Data("data".utf8))
         header.append(u32le(0))                              // data size – patched
         try handle.write(contentsOf: header)

@@ -4,6 +4,8 @@ require "fileutils"
 require "json"
 require "open3"
 
+require_relative "rerun_progress"
+
 module EarlScribe
   module Cli
     # Second-pass rerun against the captured WAV for higher accuracy. Sortformer
@@ -44,13 +46,13 @@ module EarlScribe
       end
 
       # Read RIFF/data chunk sizes from the WAV header to compute audio length.
-      # The shim wrote 16k mono Float32 (4 B/sample), so duration = data_bytes / (16k*4).
+      # The shim writes 16k mono Int16 (2 B/sample), so duration = data_bytes / (16k*2).
       def wav_duration_sec(path)
         bytes = File.read(path, 44)
         return nil unless bytes && bytes.bytesize == 44
 
         data_bytes = bytes[40, 4].unpack1("V")
-        data_bytes.to_f / (16_000 * 4)
+        data_bytes.to_f / (16_000 * 2)
       end
 
       def relocate_live(paths)
@@ -68,9 +70,16 @@ module EarlScribe
         stdin, stdout, stderr, wait_thr = Open3.popen3(*cmd)
         stdin.close
         stderr_thread = Thread.new { stderr.read }
+        spinner = batch_mode? ? RerunProgress.start_spinner : nil
         stream_to_files(stdout, paths)
+        spinner&.kill
+        RerunProgress.clear if spinner
         stderr_thread.join
         report_status(wait_thr.value, stderr_thread.value)
+      end
+
+      def batch_mode?
+        Config.rerun_model == "batch"
       end
 
       def stream_to_files(stdout, paths)
@@ -89,7 +98,7 @@ module EarlScribe
 
           handle_event(event, ctx, jsonl_file, txt_file)
         end
-        $stderr.print("\r\e[K") if progress_tty?
+        RerunProgress.clear
       end
 
       def handle_event(event, ctx, jsonl_file, txt_file)
@@ -104,22 +113,7 @@ module EarlScribe
         seg = event_to_segment(event)
         jsonl_file.puts(JSON.generate(seg))
         txt_file.puts(format_segment(seg))
-        paint_progress(event["audio_sec"]&.to_f, ctx)
-      end
-
-      def paint_progress(audio_sec, ctx)
-        return unless audio_sec && ctx[:duration]&.positive? && progress_tty?
-        return if (audio_sec - ctx[:last_paint]).abs < 0.5
-
-        ctx[:last_paint] = audio_sec
-        pct = (audio_sec * 100.0 / ctx[:duration]).clamp(0.0, 100.0)
-        $stderr.print(format("\r\e[K  rerun [%<bar>s] %<pct>5.1f%% (%<at>6.1f / %<dur>6.1fs)",
-                             bar: progress_bar(pct), pct: pct, at: audio_sec, dur: ctx[:duration]))
-      end
-
-      def progress_bar(pct, width: 30)
-        filled = (width * pct / 100.0).to_i
-        ("#" * filled) + ("-" * (width - filled))
+        RerunProgress.paint(event["audio_sec"]&.to_f, ctx)
       end
 
       def report_status(status, stderr_text)
@@ -129,10 +123,6 @@ module EarlScribe
           return false
         end
         true
-      end
-
-      def progress_tty?
-        $stderr.tty?
       end
 
       def file_pass_command(wav, opts)
