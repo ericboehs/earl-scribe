@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "stringio"
 require "test_helper"
 require "tmpdir"
 
@@ -36,17 +37,13 @@ module EarlScribe
       test "renames live, runs file pass, writes new transcripts, drops wav" do
         File.write(@paths[:transcript], "live txt")
         File.write(@paths[:jsonl], "{}\n")
-        File.write(@paths[:wav], "0" * 200)
+        write_fake_wav(@paths[:wav])
         eou = '{"type":"eou","text":"hello","start_sec":0,"audio_sec":1,"speaker":0}'
-        out = "{\"type\":\"start\"}\n#{eou}\n"
-        Open3.stub(:capture3, lambda { |*args|
-          if args.first.include?("ffmpeg")
-            ["", "", fake_status(success: true)]
-          else
-            [out, "", fake_status(success: true)]
+        out = "{\"type\":\"start\",\"audio_duration_sec\":2}\n#{eou}\n"
+        with_popen3_stub(out: out, success: true) do
+          Open3.stub(:capture3, ->(*_) { ["", "", fake_status(success: true)] }) do
+            capture_io { Rerun.run(@paths, {}) }
           end
-        }) do
-          capture_io { Rerun.run(@paths, {}) }
         end
         assert File.exist?(@paths[:transcript_live])
         assert_includes File.read(@paths[:transcript]), "Speaker 0: hello"
@@ -56,8 +53,8 @@ module EarlScribe
       test "restores live when file pass fails" do
         File.write(@paths[:transcript], "live txt")
         File.write(@paths[:jsonl], "{}\n")
-        File.write(@paths[:wav], "0" * 200)
-        Open3.stub(:capture3, ->(*_) { ["", "boom", fake_status(success: false)] }) do
+        write_fake_wav(@paths[:wav])
+        with_popen3_stub(out: "", err: "boom", success: false) do
           capture_io { Rerun.run(@paths, {}) }
         end
         assert_equal "live txt", File.read(@paths[:transcript])
@@ -66,8 +63,8 @@ module EarlScribe
 
       test "Interrupt during rerun keeps live as final" do
         File.write(@paths[:transcript], "live txt")
-        File.write(@paths[:wav], "0" * 200)
-        Open3.stub(:capture3, ->(*_) { raise Interrupt }) do
+        write_fake_wav(@paths[:wav])
+        Open3.stub(:popen3, ->(*_) { raise Interrupt }) do
           capture_io { Rerun.run(@paths, {}) }
         end
         assert File.exist?(@paths[:transcript])
@@ -81,6 +78,28 @@ module EarlScribe
         assert_includes cmd, "--file"
       end
 
+      test "file_pass_command uses Config.rerun_chunk_ms not asr_chunk_ms" do
+        Config.stub(:rerun_chunk_ms, 320) do
+          Config.stub(:asr_chunk_ms, 1280) do
+            cmd = Rerun.file_pass_command("/tmp/x.wav", {})
+            assert_includes cmd, "320"
+            assert_not_includes cmd, "1280"
+          end
+        end
+      end
+
+      test "wav_duration_sec parses RIFF header data size" do
+        write_fake_wav(@paths[:wav], data_bytes: 16_000 * 4 * 2) # 2 seconds
+        assert_in_delta 2.0, Rerun.wav_duration_sec(@paths[:wav]), 1e-6
+      end
+
+      test "report_timing prints elapsed and rate when wav has duration" do
+        write_fake_wav(@paths[:wav], data_bytes: 16_000 * 4 * 60) # 60s
+        _stdout, stderr = capture_io { Rerun.report_timing(Time.now - 5, @paths[:wav]) }
+        assert_match(/rerun done in \d+\.\d+s/, stderr)
+        assert_match(/real-time/, stderr)
+      end
+
       private
 
       def fake_status(success:)
@@ -88,6 +107,26 @@ module EarlScribe
         status.define_singleton_method(:success?) { success }
         status.define_singleton_method(:exitstatus) { success ? 0 : 1 }
         status
+      end
+
+      def write_fake_wav(path, data_bytes: 1_000)
+        header = "RIFF".dup
+        header << [36 + data_bytes].pack("V")
+        header << "WAVEfmt "
+        header << [16].pack("V") << [3].pack("v") << [1].pack("v")
+        header << [16_000].pack("V") << [64_000].pack("V") << [4].pack("v") << [32].pack("v")
+        header << "data"
+        header << [data_bytes].pack("V")
+        File.binwrite(path, header + ("\x00" * data_bytes))
+      end
+
+      def with_popen3_stub(out:, err: "", success: true, &block)
+        status = fake_status(success: success)
+        wait_thr = Object.new
+        wait_thr.define_singleton_method(:value) { status }
+        Open3.stub(:popen3, lambda { |*_args|
+          [StringIO.new, StringIO.new(out), StringIO.new(err), wait_thr]
+        }, &block)
       end
     end
   end

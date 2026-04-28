@@ -8,7 +8,8 @@ module EarlScribe
       def self.build(device, options, channels: 1)
         meeting = Calendar.current_meeting
         title = options[:title] || meeting&.dig(:title)
-        paths = Transcription::TranscriptWriter.build_paths(record: options[:record], meeting_title: title)
+        record = options[:record] || options[:rerun]
+        paths = Transcription::TranscriptWriter.build_paths(record: record, meeting_title: title)
         SessionContext.new(
           capture: build_capture(device, options, channels, paths[:recording]),
           writer: Transcription::TranscriptWriter.new(paths[:transcript]),

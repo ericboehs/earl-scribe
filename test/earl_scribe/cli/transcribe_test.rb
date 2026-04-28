@@ -471,6 +471,26 @@ module EarlScribe
         end
       end
 
+      test "--native --rerun forces a recording path even without --record" do
+        captured = nil
+        client = build_mock_client
+        client.define_singleton_method(:wait_until_done) { nil }
+        EarlScribe::Transcription::TranscriptWriter.stub(:build_paths, lambda { |**kwargs|
+          captured = kwargs
+          { transcript: File.join(@data_dir, "x.txt"), jsonl: File.join(@data_dir, "x.jsonl"),
+            transcript_live: File.join(@data_dir, "x-live.txt"), jsonl_live: File.join(@data_dir, "x-live.jsonl"),
+            wav: File.join(@data_dir, "x.wav"),
+            recording: kwargs[:record] ? File.join(@data_dir, "x.m4a") : nil }
+        }) do
+          with_test_env(local_stub: ->(**_) { client }) do
+            EarlScribe::Cli::Rerun.stub(:run, ->(*_) {}) do
+              capture_io { EarlScribe::Cli::Transcribe.run(["--native", "--rerun"]) }
+            end
+          end
+        end
+        assert_equal true, captured[:record]
+      end
+
       test "default writes jsonl sidecar with metadata" do
         client = build_mock_client
         capture = build_mock_capture(channels: 1)

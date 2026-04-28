@@ -43,6 +43,11 @@ module EarlScribe
       assert_equal 1280, EarlScribe::Config.asr_chunk_ms
     end
 
+    test "rerun_chunk_ms returns integer with default" do
+      ENV.delete("EARL_SCRIBE_RERUN_CHUNK_MS")
+      assert_equal 320, EarlScribe::Config.rerun_chunk_ms
+    end
+
     test "llama_bin has default" do
       ENV.delete("EARL_SCRIBE_LLAMA_BIN")
       assert_equal "llama-cli", EarlScribe::Config.llama_bin

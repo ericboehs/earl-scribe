@@ -12,6 +12,7 @@ module EarlScribe
       "EARL_SCRIBE_AUDIOTEE_PATH" => "audiotee",
       "EARL_SCRIBE_ASR_BIN" => "earl-scribe-asr",
       "EARL_SCRIBE_ASR_CHUNK_MS" => "1280",
+      "EARL_SCRIBE_RERUN_CHUNK_MS" => "320",
       "EARL_SCRIBE_LLAMA_BIN" => "llama-cli",
       "EARL_SCRIBE_QWEN_MODEL" => nil,
       "EARL_SCRIBE_SUMMARY_INTERVAL_SEC" => "180",
@@ -58,6 +59,10 @@ module EarlScribe
 
     def self.asr_chunk_ms
       get("EARL_SCRIBE_ASR_CHUNK_MS").to_i
+    end
+
+    def self.rerun_chunk_ms
+      get("EARL_SCRIBE_RERUN_CHUNK_MS").to_i
     end
 
     def self.llama_bin
