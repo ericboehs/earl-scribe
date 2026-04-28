@@ -99,7 +99,7 @@ module EarlScribe
           assert_includes stderr, "native ScreenCaptureKit"
         end
         assert waited
-        assert_equal({ mic: true }, captured_kwargs[:native])
+        assert_equal({ mic: true, wav_path: nil }, captured_kwargs[:native])
       end
 
       test "--native --no-mic propagates mic: false" do
@@ -113,7 +113,7 @@ module EarlScribe
         with_test_env(local_stub: local_stub) do
           capture_io { EarlScribe::Cli::Transcribe.run(["--native", "--no-mic"]) }
         end
-        assert_equal({ mic: false }, captured[:native])
+        assert_equal({ mic: false, wav_path: nil }, captured[:native])
       end
 
       test "--native interrupt is swallowed and teardown runs" do

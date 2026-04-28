@@ -12,6 +12,9 @@ module EarlScribe
         {
           transcript: File.join(dir, "#{base}.txt"),
           jsonl: File.join(dir, "#{base}.jsonl"),
+          transcript_live: File.join(dir, "#{base}-live.txt"),
+          jsonl_live: File.join(dir, "#{base}-live.jsonl"),
+          wav: File.join(dir, "#{base}.wav"),
           recording: record ? File.join(dir, "#{base}.m4a") : nil
         }
       end

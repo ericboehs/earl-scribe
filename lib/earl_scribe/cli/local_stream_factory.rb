@@ -10,14 +10,15 @@ module EarlScribe
                                        diarize: opts[:diarize] != false, diar: diar_opts(opts))
       end
 
-      def self.native(opts)
+      def self.native(opts, wav_path: nil)
         Transcription::LocalStream.new(channels: 1, sample_rate: 16_000,
                                        diarize: opts[:diarize] != false, diar: diar_opts(opts),
-                                       native: { mic: !opts[:no_mic] })
+                                       native: { mic: !opts[:no_mic], wav_path: wav_path })
       end
 
       def self.diar_opts(opts)
-        { debug: opts[:diar_debug] == true, variant: opts[:diar_variant] }
+        { debug: opts[:diar_debug] == true, variant: opts[:diar_variant],
+          wait_ms: opts[:diar_wait_ms] }
       end
       private_class_method :diar_opts
     end

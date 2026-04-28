@@ -31,6 +31,9 @@ struct EarlScribeASR: AsyncParsableCommand {
     @Flag(name: .long, inversion: .prefixedNo, help: "Include mic in --capture mode (default true).")
     var mic: Bool = true
 
+    @Option(name: .long, help: "Path to write the captured 16 kHz mono Float32 WAV (--capture only). Required for the second-pass rerun.")
+    var captureWav: String?
+
     @Option(name: .long, help: "Stdin sample format: f32_16k_mono or s16_48k_mono. Default f32_16k_mono.")
     var stdinFormat: String = "f32_16k_mono"
 
@@ -62,9 +65,13 @@ struct EarlScribeASR: AsyncParsableCommand {
     @Option(name: .long, help: "Sortformer model variant: fastV2, fastV2_1, balancedV2, balancedV2_1, highContextV2, highContextV2_1. Default highContextV2.")
     var diarVariant: String = "highContextV2"
 
+    @Option(name: .long, help: "Max ms to hold an EOU waiting for Sortformer to catch up before emitting (longer = more accurate speaker tags, slower live latency). Default 3000.")
+    var diarWaitMs: Int = 3000
+
     mutating func run() async throws {
         _ = Self.wallStart  // force timer init at process start
         Self.diarDebugEnabled = diarDebug
+        Self.maxDiarWaitMs = diarWaitMs
 
         let chunkSize: StreamingChunkSize
         switch chunkMs {
@@ -194,6 +201,12 @@ struct EarlScribeASR: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        let wavWriter = try captureWav.map { try WavWriter(path: $0) }
+        if let wavWriter {
+            emit(["type": "recording", "path": wavWriter.path, "format": "wav_f32_16k_mono"])
+        }
+        defer { wavWriter?.close() }
+
         emit([
             "type": "start",
             "mode": "capture",
@@ -246,6 +259,7 @@ struct EarlScribeASR: AsyncParsableCommand {
                 continue
             }
 
+            wavWriter?.append(mixed)
             let bufferData = mixed.withUnsafeBufferPointer { Data(buffer: $0) }
             guard let buffer = Self.makePcmBuffer(format: format,
                                                   frames: AVAudioFrameCount(mixed.count),
@@ -572,7 +586,7 @@ struct EarlScribeASR: AsyncParsableCommand {
     /// Bound on how long an EOU waits for Sortformer to catch up before emitting
     /// without a speaker tag. Keeps live latency bounded if Sortformer can't track
     /// realtime audio.
-    private static let maxDiarWaitMs: Int = 3000
+    nonisolated(unsafe) private static var maxDiarWaitMs: Int = 3000
 
     private static func consumeLastEouEnd(updatingTo endSec: Double) -> Double {
         pendingLock.lock(); defer { pendingLock.unlock() }

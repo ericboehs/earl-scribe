@@ -21,7 +21,8 @@ module EarlScribe
         @diarize = diarize
         @diar_debug = diar[:debug] == true
         @diar_variant = diar[:variant]
-        @native = native ? { mic: native[:mic] != false } : nil
+        @diar_wait_ms = diar[:wait_ms]
+        @native = native && { mic: native[:mic] != false, wav_path: native[:wav_path] }
         @parser = LocalStreamEventParser.new
         @subprocess_dead = false
         reset_handles
@@ -89,11 +90,13 @@ module EarlScribe
         diar << "--no-diarize" unless @diarize
         diar << "--diar-debug" if @diar_debug
         diar += ["--diar-variant", @diar_variant] if @diar_variant
+        diar += ["--diar-wait-ms", @diar_wait_ms.to_s] if @diar_wait_ms
         [@asr_bin, "--chunk-ms", @chunk_ms.to_s, *source, *diar]
       end
 
       def native_args
-        @native[:mic] ? ["--capture"] : ["--capture", "--no-mic"]
+        cmd = @native[:mic] ? ["--capture"] : ["--capture", "--no-mic"]
+        @native[:wav_path] ? cmd + ["--capture-wav", @native[:wav_path]] : cmd
       end
 
       def stdin_format

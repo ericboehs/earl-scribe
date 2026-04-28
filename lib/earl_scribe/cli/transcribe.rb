@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "local_stream_factory"
+require_relative "rerun"
 require_relative "transcribe_banner"
 require_relative "transcribe_flags"
 require_relative "transcribe_mode"
@@ -82,7 +83,10 @@ module EarlScribe
       end
 
       def self.stream_native(ctx, opts)
-        run_local_client(ctx, nil, LocalStreamFactory.native(opts), &:wait_until_done)
+        wav = opts[:rerun] ? ctx.paths[:wav] : nil
+        client = LocalStreamFactory.native(opts, wav_path: wav)
+        run_local_client(ctx, nil, client, &:wait_until_done)
+        Rerun.run(ctx.paths, opts) if opts[:rerun]
       end
 
       def self.stream_local(ctx, resolver, opts)

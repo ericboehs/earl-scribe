@@ -9,9 +9,10 @@ module EarlScribe
                    "--no-diarize" => [:diarize, false],
                    "--diar-debug" => [:diar_debug, true],
                    "--native" => [:native, true],
+                   "--rerun" => [:rerun, true],
                    "--summary" => [:summarize, true] }.freeze
       VALUE_FLAGS = %w[--device --mic --mic-gain-db --threshold --title
-                       --summary-interval-sec --diar-variant].freeze
+                       --summary-interval-sec --diar-variant --diar-wait-ms].freeze
 
       def self.parse(argv)
         warn_unknown_flags(argv)
@@ -26,12 +27,19 @@ module EarlScribe
       end
 
       def self.capture_defaults(val)
+        device_defaults(val).merge(diar_value_defaults(val),
+                                   threshold: val["--threshold"]&.to_f,
+                                   title: val["--title"])
+      end
+
+      def self.device_defaults(val)
         { device: val["--device"] || (Config.audio_device_explicit? ? Config.audio_device : nil),
           mic: val["--mic"] || Config.audio_mic,
-          mic_gain_db: val["--mic-gain-db"]&.to_f || Config.mic_gain_db,
-          threshold: val["--threshold"]&.to_f,
-          title: val["--title"],
-          diar_variant: val["--diar-variant"] }
+          mic_gain_db: val["--mic-gain-db"]&.to_f || Config.mic_gain_db }
+      end
+
+      def self.diar_value_defaults(val)
+        { diar_variant: val["--diar-variant"], diar_wait_ms: val["--diar-wait-ms"]&.to_i }
       end
 
       def self.summary_defaults(val)
@@ -41,7 +49,7 @@ module EarlScribe
 
       def self.boolean_defaults
         { cloud: false, stereo: false, identify: true, record: false, no_mic: false,
-          diarize: true, diar_debug: false, native: false }
+          diarize: true, diar_debug: false, native: false, rerun: false }
       end
 
       def self.warn_unknown_flags(argv)
@@ -62,7 +70,8 @@ module EarlScribe
         arg.start_with?("--") && !VALUE_FLAGS.include?(arg) && !FLAG_MAP.key?(arg)
       end
 
-      private_class_method :default_options, :capture_defaults, :summary_defaults, :boolean_defaults,
+      private_class_method :default_options, :capture_defaults, :device_defaults, :diar_value_defaults,
+                           :summary_defaults, :boolean_defaults,
                            :warn_unknown_flags, :unknown_flags, :unknown?
     end
   end

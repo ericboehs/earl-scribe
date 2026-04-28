@@ -70,6 +70,13 @@ module EarlScribe
         assert_not_includes client.build_command, "--no-mic"
       end
 
+      test "build_command appends --capture-wav when wav_path is set" do
+        client = LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true, wav_path: "/tmp/x.wav" })
+        cmd = client.build_command
+        assert_includes cmd, "--capture-wav"
+        assert_includes cmd, "/tmp/x.wav"
+      end
+
       test "native? reports the native flag" do
         assert LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true }).native?
         assert_not LocalStream.new(asr_bin: "/tmp/asr").native?

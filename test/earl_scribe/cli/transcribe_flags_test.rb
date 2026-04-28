@@ -112,6 +112,16 @@ module EarlScribe
         assert_equal true, opts[:native]
       end
 
+      test "rerun defaults to false" do
+        opts = TranscribeFlags.parse([])
+        assert_equal false, opts[:rerun]
+      end
+
+      test "--rerun enables second-pass" do
+        opts = TranscribeFlags.parse(["--rerun"])
+        assert_equal true, opts[:rerun]
+      end
+
       test "value flags after another flag are not flagged unknown" do
         _stdout, stderr = capture_io { TranscribeFlags.parse(["--mic", "Mic A", "--title", "Foo"]) }
         assert_not_includes stderr, "unknown flag"
