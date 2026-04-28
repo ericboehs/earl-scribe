@@ -2,12 +2,20 @@
 
 module EarlScribe
   module Cli
-    # CLI flag parsing for the `transcribe` command.
+    # Parses `earl-scribe transcribe` argv into an options hash, with defaults
+    # sourced from Config and warnings on unknown flags.
     module TranscribeFlags
-      FLAG_MAP = { "--local" => [:local, true], "--stereo" => [:stereo, true],
+      FLAG_MAP = { "--cloud" => [:cloud, true], "--stereo" => [:stereo, true],
                    "--no-identify" => [:identify, false], "--record" => [:record, true],
-                   "--no-mic" => [:no_mic, true] }.freeze
-      VALUE_FLAGS = %w[--device --mic --threshold --title].freeze
+                   "--no-mic" => [:no_mic, true],
+                   "--no-diarize" => [:diarize, false],
+                   "--diar-debug" => [:diar_debug, true],
+                   "--native" => [:native, true],
+                   "--rerun" => [:rerun, true],
+                   "--summary" => [:summarize, true] }.freeze
+      VALUE_FLAGS = %w[--device --mic --mic-gain-db --threshold --title
+                       --summary-interval-sec --diar-variant --diar-wait-ms
+                       --engine].freeze
 
       def self.parse(argv)
         warn_unknown_flags(argv)
@@ -18,10 +26,34 @@ module EarlScribe
       end
 
       def self.default_options(val)
+        capture_defaults(val).merge(summary_defaults(val), boolean_defaults)
+      end
+
+      def self.capture_defaults(val)
+        device_defaults(val).merge(diar_value_defaults(val),
+                                   threshold: val["--threshold"]&.to_f,
+                                   title: val["--title"],
+                                   engine: (val["--engine"] || "parakeet").to_sym)
+      end
+
+      def self.device_defaults(val)
         { device: val["--device"] || (Config.audio_device_explicit? ? Config.audio_device : nil),
           mic: val["--mic"] || Config.audio_mic,
-          threshold: val["--threshold"]&.to_f, title: val["--title"],
-          local: false, stereo: false, identify: true, record: false, no_mic: false }
+          mic_gain_db: val["--mic-gain-db"]&.to_f || Config.mic_gain_db }
+      end
+
+      def self.diar_value_defaults(val)
+        { diar_variant: val["--diar-variant"], diar_wait_ms: val["--diar-wait-ms"]&.to_i }
+      end
+
+      def self.summary_defaults(val)
+        { summary_interval_sec: val["--summary-interval-sec"]&.to_i || Config.summary_interval_sec,
+          summarize: Config.summarize? }
+      end
+
+      def self.boolean_defaults
+        { cloud: false, stereo: false, identify: true, record: false, no_mic: false,
+          diarize: true, diar_debug: false, native: false, rerun: false }
       end
 
       def self.warn_unknown_flags(argv)
@@ -42,7 +74,9 @@ module EarlScribe
         arg.start_with?("--") && !VALUE_FLAGS.include?(arg) && !FLAG_MAP.key?(arg)
       end
 
-      private_class_method :default_options, :warn_unknown_flags, :unknown_flags, :unknown?
+      private_class_method :default_options, :capture_defaults, :device_defaults, :diar_value_defaults,
+                           :summary_defaults, :boolean_defaults,
+                           :warn_unknown_flags, :unknown_flags, :unknown?
     end
   end
 end

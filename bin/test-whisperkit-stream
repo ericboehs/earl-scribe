@@ -1,0 +1,77 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Drives the benchmark WAV through Ruby's LocalStream → WhisperKit shim,
+# writes a JSONL transcript, then runs the post-session diarization splice
+# (whisperkit-cli diarize → RTTM → speaker labels). Smoke-test for the
+# engine: :whisperkit + WhisperkitDiarize integration.
+
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "earl_scribe"
+require "earl_scribe/cli/whisperkit_diarize"
+require "fileutils"
+require "json"
+require "tmpdir"
+
+WAV = ARGV[0] || File.expand_path("../test/fixtures/benchmark/eert-retro-60s.wav", __dir__)
+MODEL = ENV["EARL_SCRIBE_WHISPERKIT_MODEL"] ||
+        File.expand_path("~/Library/Application Support/MacWhisper/models/whisperkit/" \
+                         "models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3-v20240930")
+
+abort "WAV not found: #{WAV}" unless File.exist?(WAV)
+abort "Model not found: #{MODEL}" unless File.directory?(MODEL)
+
+ENV["EARL_SCRIBE_WHISPERKIT_MODEL"] = MODEL
+ENV["EARL_SCRIBE_WHISPERKIT_BIN"] = File.expand_path(
+  "../swift/earl-scribe-whisperkit/.build/release/earl-scribe-whisperkit", __dir__
+)
+
+dir = Dir.mktmpdir("whisperkit-poc-")
+paths = {
+  transcript: File.join(dir, "out.txt"),
+  jsonl: File.join(dir, "out.jsonl"),
+  wav: File.join(dir, "out.wav")
+}
+FileUtils.cp(WAV, paths[:wav])
+
+stream = EarlScribe::Transcription::LocalStream.new(
+  channels: 1, sample_rate: 16_000, engine: :whisperkit
+)
+
+txt = File.open(paths[:transcript], "w")
+jsonl = File.open(paths[:jsonl], "w")
+
+stream.connect(->(result) {
+  word = result[:words].first
+  seg = { "speaker" => "Speaker 0", "text" => result[:transcript],
+          "start_time" => word["start"].to_f, "end_time" => word["end"].to_f, "channel" => 0 }
+  jsonl.puts(JSON.generate(seg))
+  txt.puts(format("[%<ts>s] %<spk>s: %<text>s",
+                  ts: format("%02d:%02d:%02d", (seg["start_time"].to_i / 3600),
+                             (seg["start_time"].to_i % 3600) / 60, seg["start_time"].to_i % 60),
+                  spk: seg["speaker"], text: seg["text"]))
+})
+
+ffmpeg = IO.popen(
+  ["ffmpeg", "-v", "error", "-i", WAV, "-f", "f32le", "-ac", "1", "-ar", "16000", "-"], "rb"
+)
+while (chunk = ffmpeg.read(64 * 1024))
+  stream.send_audio(chunk)
+end
+ffmpeg.close
+
+sleep 5
+stream.close
+txt.close
+jsonl.close
+
+warn "\n--- Pre-diarization (Speaker 0 placeholder) ---"
+puts File.read(paths[:transcript])
+
+warn "\n--- Running diarization ---"
+EarlScribe::Cli::WhisperkitDiarize.run(paths, diar_num_speakers: 2)
+
+warn "\n--- Post-diarization (speaker labels spliced) ---"
+puts File.read(paths[:transcript])
+
+warn "\nArtifacts: #{dir}"

@@ -14,27 +14,29 @@ require_relative "earl_scribe/audio/audiotee"
 require_relative "earl_scribe/audio/dual_capture"
 require_relative "earl_scribe/audio/pcm_buffer"
 require_relative "earl_scribe/transcription/result"
-require_relative "earl_scribe/transcription/hallucination_filter"
 require_relative "earl_scribe/transcription/result_parser"
 require_relative "earl_scribe/transcription/word_grouper"
 require_relative "earl_scribe/transcription/deepgram"
+require_relative "earl_scribe/transcription/local_stream_event_parser"
+require_relative "earl_scribe/transcription/local_stream"
 require_relative "earl_scribe/transcription/transcript_writer"
 require_relative "earl_scribe/transcription/jsonl_writer"
 require_relative "earl_scribe/transcription/jsonl_reader"
-require_relative "earl_scribe/transcription/whisper"
 require_relative "earl_scribe/speaker/store"
 require_relative "earl_scribe/speaker/encoder"
 require_relative "earl_scribe/speaker/identifier"
 require_relative "earl_scribe/speaker/session_resolver"
 require_relative "earl_scribe/audio/segment_extractor"
 require_relative "earl_scribe/audio/player"
+require_relative "earl_scribe/summarizer/qwen"
+require_relative "earl_scribe/summarizer/scheduler"
 require_relative "earl_scribe/calendar"
 require_relative "earl_scribe/cli/terminal_display"
 require_relative "earl_scribe/cli"
 
-# Meeting transcription CLI with Deepgram streaming and whisper.cpp
+# Top-level namespace for the earl-scribe meeting-transcription gem.
 module EarlScribe
-  # Base error class for EarlScribe exceptions
+  # Base error class for all earl-scribe runtime failures.
   class Error < StandardError; end
 
   def self.config_root
@@ -48,7 +50,16 @@ module EarlScribe
   end
 
   def self.logger
-    @logger ||= Logger.new($stderr, level: Logger::INFO)
+    @logger ||= build_logger
+  end
+
+  def self.build_logger
+    if (path = ENV.fetch("EARL_SCRIBE_LOG_FILE", nil))
+      FileUtils.mkdir_p(File.dirname(path))
+      Logger.new(path, level: Logger::DEBUG)
+    else
+      Logger.new($stderr, level: Logger::INFO)
+    end
   end
 
   def self.logger=(new_logger)

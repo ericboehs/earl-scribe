@@ -5,27 +5,38 @@ module EarlScribe
     # Matches audio embeddings against enrolled speakers using cosine similarity
     class Identifier
       DEFAULT_THRESHOLD = 0.75
+      # Minimum gap between the best and second-best similarity for a match
+      # to be considered confident. With acoustically-similar enrolled
+      # voiceprints (same room/mic/call), the top-2 often both clear the
+      # absolute threshold, so absolute-only matching produces false labels.
+      DEFAULT_MARGIN = 0.04
 
-      attr_reader :store, :threshold
+      attr_reader :store, :threshold, :margin
 
-      def initialize(store:, threshold: nil)
+      def initialize(store:, threshold: nil, margin: nil)
         @store = store
         @threshold = threshold || DEFAULT_THRESHOLD
+        @margin = margin || DEFAULT_MARGIN
       end
 
       def identify(embedding)
-        best_name, best_sim = best_match(embedding)
-        return [best_name, best_sim] if best_sim >= threshold
+        scores = scored_matches(embedding)
+        return [nil, 0.0] if scores.empty?
 
-        [nil, best_sim]
+        best, second = scores.first(2)
+        return [nil, best[1]] if best[1] < threshold
+        return [nil, best[1]] if second && (best[1] - second[1]) < margin
+
+        best
       end
 
       private
 
-      def best_match(embedding)
-        top_score = store.list.map { |name, data| [name, VectorMath.average_similarity(embedding, data["embeddings"])] }
-                              .max_by { |_name, sim| sim }
-        top_score || [nil, 0.0]
+      def scored_matches(embedding)
+        scores = store.list.map do |name, data|
+          [name, VectorMath.average_similarity(embedding, data["embeddings"])]
+        end
+        scores.sort_by { |_, sim| -sim }
       end
     end
 

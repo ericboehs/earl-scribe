@@ -17,7 +17,8 @@ module EarlScribe
       end
 
       test "mic_command uses sox with given device and mono s16le raw output" do
-        capture = EarlScribe::Audio::DualCapture.new(mic_device: "Streamer X Main", sample_rate: 48_000)
+        capture = EarlScribe::Audio::DualCapture.new(mic_device: "Streamer X Main", sample_rate: 48_000,
+                                                     mic_gain_db: 0)
         cmd = capture.mic_command
 
         assert_equal "sox", cmd.first
@@ -26,6 +27,14 @@ module EarlScribe
         assert_equal "1", cmd[cmd.index("-c") + 1]
         assert_equal "16", cmd[cmd.index("-b") + 1]
         assert_equal "-", cmd.last
+      end
+
+      test "mic_command appends sox gain stage when mic_gain_db is positive" do
+        capture = EarlScribe::Audio::DualCapture.new(mic_device: "default", sample_rate: 48_000,
+                                                     mic_gain_db: 12)
+        cmd = capture.mic_command
+        assert_equal "gain", cmd[-2]
+        assert_equal "12", cmd.last
       end
 
       test "start_streaming mixes mono chunks by summing and clamping" do

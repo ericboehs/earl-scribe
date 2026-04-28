@@ -1,0 +1,97 @@
+# frozen_string_literal: true
+
+require "json"
+
+module EarlScribe
+  module Transcription
+    # Streaming JSONL parser for ASR shim output. Buffers partial lines across
+    # reads and maps engine event types (eou/final/confirmed) to Result hashes.
+    class LocalStreamEventParser
+      def initialize
+        @last_audio_sec = 0.0
+        @leftover = +""
+        @accumulated = +""
+      end
+
+      def feed(bytes)
+        @leftover << bytes
+        events = []
+        while (newline = @leftover.index("\n"))
+          line = @leftover.slice!(0..newline).chomp
+          parsed = parse_line(line)
+          events << parsed if parsed
+        end
+        events
+      end
+
+      def parse_line(line)
+        return nil if line.empty?
+
+        json = line.start_with?("{") ? line : line[/\{.*\}/]
+        return { event: :noise, data: { "line" => line } } unless json
+
+        data = JSON.parse(json)
+        build_event(data["type"], data)
+      rescue JSON::ParserError
+        { event: :malformed, data: { "line" => line } }
+      end
+
+      def build_event(kind, data)
+        event = { event: kind.to_sym, data: data }
+        case kind
+        when "eou" then event[:result] = build_eou_result(data)
+        when "final" then event[:result] = build_tail_result(data)
+        when "confirmed" then event[:result] = build_confirmed_result(data)
+        end
+        event
+      end
+
+      private
+
+      def build_eou_result(data)
+        text = data["text"].to_s.strip
+        return nil if text.empty?
+
+        end_time = (data["audio_sec"] || @last_audio_sec).to_f
+        record_segment(text, end_time, speaker: data["speaker"].to_i,
+                                       start_override: data["start_sec"]&.to_f,
+                                       channel_hint: data["channel_hint"])
+      end
+
+      def build_confirmed_result(data)
+        text = data["text"].to_s.strip
+        return nil if text.empty?
+
+        record_segment(text, data["end_sec"].to_f, speaker: 0,
+                                                   start_override: data["start_sec"]&.to_f,
+                                                   channel_hint: data["channel_hint"])
+      end
+
+      def build_tail_result(data)
+        full_text = data["text"].to_s.strip
+        tail = compute_tail(full_text)
+        return nil if tail.empty?
+
+        end_time = (data["audio_duration_sec"] || @last_audio_sec).to_f
+        record_segment(tail, end_time, speaker: data["speaker"].to_i,
+                                       channel_hint: data["channel_hint"])
+      end
+
+      def record_segment(text, end_time, speaker: 0, start_override: nil, channel_hint: nil)
+        start_time = start_override || @last_audio_sec
+        @last_audio_sec = end_time
+        @accumulated = @accumulated.empty? ? text.dup : "#{@accumulated} #{text}"
+        word = { "speaker" => speaker, "punctuated_word" => text, "word" => text,
+                 "start" => start_time, "end" => end_time }
+        word["channel_hint"] = channel_hint if channel_hint
+        { channel_index: 0, transcript: text, words: [word] }
+      end
+
+      def compute_tail(full_text)
+        return full_text if @accumulated.empty?
+
+        full_text.start_with?(@accumulated) ? full_text[@accumulated.length..].to_s.strip : full_text
+      end
+    end
+  end
+end

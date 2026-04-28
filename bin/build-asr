@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Build the earl-scribe-asr Swift CLI (FluidAudio Parakeet EOU streaming shim).
+# Prints the resulting binary path and the EARL_SCRIBE_ASR_BIN export line.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+PKG_DIR="swift/earl-scribe-asr"
+
+if ! command -v swift >/dev/null 2>&1; then
+  echo "error: Swift compiler not found. Install Xcode or the Swift toolchain." >&2
+  exit 1
+fi
+
+if [ ! -d "$PKG_DIR" ]; then
+  echo "error: $PKG_DIR not found" >&2
+  exit 1
+fi
+
+echo "==> Building earl-scribe-asr (release)"
+(cd "$PKG_DIR" && swift build -c release)
+
+BUILD_BIN="$(cd "$PKG_DIR" && swift build -c release --show-bin-path)/earl-scribe-asr"
+
+if [ ! -x "$BUILD_BIN" ]; then
+  echo "error: built binary not found at $BUILD_BIN" >&2
+  exit 1
+fi
+
+echo
+echo "==> Done."
+echo "Binary: $BUILD_BIN"
+echo
+echo "Export this to make earl-scribe find it:"
+echo "  export EARL_SCRIBE_ASR_BIN=\"$BUILD_BIN\""

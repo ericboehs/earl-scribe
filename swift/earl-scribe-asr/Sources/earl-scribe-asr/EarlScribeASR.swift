@@ -1,0 +1,884 @@
+import ArgumentParser
+import AVFoundation
+import FluidAudio
+import Foundation
+
+// File-scoped flag for SIGINT/SIGTERM. The closure passed to signal(2) must be a
+// @convention(c) function pointer with no captures; using a free-standing global
+// variable lets the closure reference it without capturing any context.
+nonisolated(unsafe) private let earlScribeInterruptFlag: UnsafeMutablePointer<Bool> = {
+    let p = UnsafeMutablePointer<Bool>.allocate(capacity: 1)
+    p.initialize(to: false)
+    return p
+}()
+
+@main
+struct EarlScribeASR: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "earl-scribe-asr",
+        abstract: "Local streaming ASR via FluidAudio Parakeet EOU. Emits JSONL on stdout."
+    )
+
+    @Option(name: .long, help: "Audio file to transcribe (any format). Mutually exclusive with --stdin.")
+    var file: String?
+
+    @Flag(name: .long, help: "Read raw PCM from stdin until EOF.")
+    var stdin: Bool = false
+
+    @Flag(name: .long, help: "Capture system audio (ScreenCaptureKit) + mic (AVAudioEngine) directly. No external audiotee/sox.")
+    var capture: Bool = false
+
+    @Flag(name: .long, help: "Batch (non-streaming) mode: transcribe --file with Parakeet TDT 0.6B v2 (punctuation + casing). Slower first run; downloads ~600MB.")
+    var batch: Bool = false
+
+    @Flag(name: .long, inversion: .prefixedNo, help: "Include mic in --capture mode (default true).")
+    var mic: Bool = true
+
+    @Option(name: .long, help: "Path to write the captured 16 kHz mono Float32 WAV (--capture only). Required for the second-pass rerun.")
+    var captureWav: String?
+
+    @Option(name: .long, help: "Stdin sample format: f32_16k_mono or s16_48k_mono. Default f32_16k_mono.")
+    var stdinFormat: String = "f32_16k_mono"
+
+    @Option(name: .long, help: "Chunk size in ms: 160, 320, or 1280. Default 1280 (best accuracy; force-flush bounds live latency).")
+    var chunkMs: Int = 1280
+
+    @Option(name: .long, help: "Simulated live feed size in ms (--file only). Default 1000.")
+    var feedMs: Int = 1000
+
+    @Option(name: .long, help: "Stdin read slice size in ms. Default 100.")
+    var stdinSliceMs: Int = 100
+
+    @Flag(name: .long, help: "Decode file at real-time pace instead of as fast as possible. (--file only)")
+    var realtime: Bool = false
+
+    @Flag(name: .long, help: "Suppress partial/eou events; only emit final.")
+    var quiet: Bool = false
+
+    @Option(name: .long, help: "Force-flush an utterance after this many seconds of unbroken speech. Default 4.0.")
+    var maxUtteranceSec: Double = 4.0
+
+    @Flag(name: .long, inversion: .prefixedNo,
+          help: "Run Sortformer diarization in parallel and tag EOU events with speaker IDs.")
+    var diarize: Bool = true
+
+    @Flag(name: .long, help: "Emit per-EOU diarizer state on stderr (frames, speaker count, dominant id).")
+    var diarDebug: Bool = false
+
+    @Option(name: .long, help: "Sortformer model variant: fastV2, fastV2_1, balancedV2, balancedV2_1, highContextV2, highContextV2_1. Default highContextV2.")
+    var diarVariant: String = "highContextV2"
+
+    @Option(name: .long, help: "Max ms to hold an EOU waiting for Sortformer to catch up before emitting (longer = more accurate speaker tags, slower live latency). Default 3000.")
+    var diarWaitMs: Int = 3000
+
+    mutating func run() async throws {
+        _ = Self.wallStart  // force timer init at process start
+        Self.diarDebugEnabled = diarDebug
+        Self.maxDiarWaitMs = diarWaitMs
+
+        let chunkSize: StreamingChunkSize
+        switch chunkMs {
+        case 160: chunkSize = .ms160
+        case 320: chunkSize = .ms320
+        case 1280: chunkSize = .ms1280
+        default:
+            emit(["type": "error", "message": "invalid chunk-ms: must be 160, 320, or 1280"])
+            throw ExitCode.validationFailure
+        }
+
+        let modeCount = [stdin, file != nil, capture].filter { $0 }.count
+        if modeCount != 1 {
+            emit(["type": "error", "message": "pass exactly one of --file, --stdin, or --capture"])
+            throw ExitCode.validationFailure
+        }
+        if batch && (stdin || capture) {
+            emit(["type": "error", "message": "--batch requires --file"])
+            throw ExitCode.validationFailure
+        }
+
+        if capture {
+            try await runCapture(chunkSize: chunkSize)
+        } else if stdin {
+            try await runStdin(chunkSize: chunkSize)
+        } else if batch {
+            try await runBatch()
+        } else {
+            try await runFile(chunkSize: chunkSize)
+        }
+    }
+
+    private func runFile(chunkSize: StreamingChunkSize) async throws {
+        let path = file!
+        let fileURL = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            emit(["type": "error", "message": "file not found: \(fileURL.path)"])
+            throw ExitCode.failure
+        }
+
+        let audioFile = try AVAudioFile(forReading: fileURL)
+        let audioDurationSec = Double(audioFile.length) / audioFile.processingFormat.sampleRate
+        emit([
+            "type": "start",
+            "mode": "file",
+            "file": fileURL.lastPathComponent,
+            "chunk_ms": chunkMs,
+            "audio_duration_sec": audioDurationSec,
+            "source_sample_rate": audioFile.processingFormat.sampleRate,
+            "source_channels": Int(audioFile.processingFormat.channelCount)
+        ])
+
+        let manager = StreamingEouAsrManager(chunkSize: chunkSize)
+        try await loadAndWireCallbacks(manager: manager)
+        let diarizer = try await loadDiarizerIfEnabled()
+        Self.setDiarizer(diarizer)
+        defer { Self.setDiarizer(nil) }
+
+        let feedFrames = AVAudioFrameCount(
+            Double(feedMs) / 1000.0 * audioFile.processingFormat.sampleRate
+        )
+        let format = audioFile.processingFormat
+
+        let runStart = Date()
+        var audioClockSec = 0.0
+        var samplesSinceFlush = 0
+
+        while audioFile.framePosition < audioFile.length {
+            guard let slice = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: feedFrames) else {
+                emit(["type": "error", "message": "failed to allocate buffer"])
+                throw ExitCode.failure
+            }
+            try audioFile.read(into: slice, frameCount: feedFrames)
+            if slice.frameLength == 0 { break }
+            let sliceFrames = slice.frameLength
+
+            let diarSamples = diarizer == nil ? [] : Self.floatsFromBuffer(slice)
+            let diarRate = format.sampleRate
+            try await manager.appendAudio(slice)
+            try Self.feedDiarizer(diarizer, samples: diarSamples, sourceRate: diarRate)
+            let sliceSec = Double(sliceFrames) / format.sampleRate
+            audioClockSec += sliceSec
+            Self.setAudioSec(audioClockSec)
+            try await manager.processBufferedAudio()
+            _ = try? diarizer?.process()
+            Self.drainPendingEous(force: false)
+            samplesSinceFlush += Int(sliceFrames)
+            if await manager.eouDetected {
+                await manager.reset()
+                samplesSinceFlush = 0
+            } else if Double(samplesSinceFlush) / format.sampleRate >= maxUtteranceSec {
+                await manager.injectSilence(2.0)
+                try await manager.processBufferedAudio()
+                if await manager.eouDetected {
+                    await manager.reset()
+                }
+                samplesSinceFlush = 0
+            }
+
+            if realtime {
+                let elapsed = Date().timeIntervalSince(runStart)
+                let lag = audioClockSec - elapsed
+                if lag > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(lag * 1_000_000_000))
+                }
+            }
+        }
+
+        let finalText = try await manager.finish()
+        _ = try? diarizer?.finalizeSession()
+        Self.drainPendingEous(force: true)
+        let wall = Date().timeIntervalSince(runStart)
+        let rtfx = audioDurationSec / max(wall, 0.0001)
+
+        emit([
+            "type": "final",
+            "text": finalText,
+            "audio_duration_sec": audioDurationSec,
+            "wall_sec": wall,
+            "rtfx": rtfx
+        ])
+
+        await manager.cleanup()
+        diarizer?.cleanup()
+    }
+
+    private func runBatch() async throws {
+        let path = file!
+        let fileURL = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            emit(["type": "error", "message": "file not found: \(fileURL.path)"])
+            throw ExitCode.failure
+        }
+
+        let audioFile = try AVAudioFile(forReading: fileURL)
+        let audioDurationSec = Double(audioFile.length) / audioFile.processingFormat.sampleRate
+        emit([
+            "type": "start", "mode": "batch", "file": fileURL.lastPathComponent,
+            "audio_duration_sec": audioDurationSec, "model": "parakeet-tdt-0.6b-v2"
+        ])
+
+        let runStart = Date()
+        let loadStart = Date()
+        let models = try await AsrModels.downloadAndLoad(version: .v2)
+        let asr = AsrManager(config: .default)
+        try await asr.loadModels(models)
+        emit(["type": "models_loaded", "elapsed_sec": Date().timeIntervalSince(loadStart)])
+
+        let diarizer = try await loadDiarizerIfEnabled()
+        defer { diarizer?.cleanup() }
+
+        if let diarizer { try await feedDiarizerWithFile(diarizer, audioURL: fileURL) }
+
+        var state = try TdtDecoderState()
+        let result = try await asr.transcribe(fileURL, decoderState: &state)
+        let words = Self.wordTimingsFromTokens(result.tokenTimings ?? [])
+        let sentences = Self.splitIntoSentences(fullText: result.text, words: words,
+                                                audioDurationSec: audioDurationSec)
+        emitSentences(sentences, diarizer: diarizer)
+
+        let wall = Date().timeIntervalSince(runStart)
+        let rtfx = audioDurationSec / max(wall, 0.0001)
+        emit([
+            "type": "final", "text": result.text, "audio_duration_sec": audioDurationSec,
+            "wall_sec": wall, "rtfx": rtfx
+        ])
+    }
+
+    private func emitSentences(_ sentences: [BatchSentence], diarizer: SortformerDiarizer?) {
+        for sentence in sentences {
+            var payload: [String: Any] = [
+                "type": "eou", "text": sentence.text,
+                "start_sec": sentence.startSec, "audio_sec": sentence.endSec,
+                "wall_ms": Self.wallMs()
+            ]
+            if let diarizer,
+               let speaker = Self.dominantSpeaker(diarizer: diarizer,
+                                                  startSec: sentence.startSec,
+                                                  endSec: sentence.endSec) {
+                payload["speaker"] = speaker
+            }
+            Self.emitStatic(payload)
+        }
+    }
+
+    /// Load the WAV once into a Float32 array so Sortformer can ingest it before
+    /// transcription kicks off — same parallel-pipeline pattern as the streaming
+    /// modes.
+    private func feedDiarizerWithFile(_ diarizer: SortformerDiarizer, audioURL: URL) async throws {
+        let audioFile = try AVAudioFile(forReading: audioURL)
+        let format = audioFile.processingFormat
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format,
+                                            frameCapacity: AVAudioFrameCount(audioFile.length)) else {
+            return
+        }
+        try audioFile.read(into: buffer)
+        let samples = Self.floatsFromBuffer(buffer)
+        try diarizer.addAudio(samples, sourceSampleRate: format.sampleRate)
+        _ = try? diarizer.process()
+        _ = try? diarizer.finalizeSession()
+    }
+
+    /// Build word-level timings from FluidAudio's token-timings stream.
+    /// Parakeet TDT v2 emits tokens with a leading ASCII space marking the
+    /// start of a new word — anything else (sub-word continuation, punctuation)
+    /// glues onto the prior word.
+    static func wordTimingsFromTokens(_ timings: [TokenTiming]) -> [BatchWord] {
+        var words: [BatchWord] = []
+        for t in timings {
+            let token = t.token
+            let starts = token.hasPrefix(" ") || token.hasPrefix("\u{2581}")
+            if starts || words.isEmpty {
+                let text = starts ? String(token.dropFirst()) : token
+                words.append(BatchWord(text: text, startSec: t.startTime, endSec: t.endTime))
+            } else {
+                let last = words.removeLast()
+                words.append(BatchWord(text: last.text + token, startSec: last.startSec, endSec: t.endTime))
+            }
+        }
+        return words
+    }
+
+    /// Split the punctuated transcript on `.!?` boundaries and align each
+    /// sentence to a real time range using word-level timings. We trust the
+    /// model's full text for punctuation/casing and only use the timings to
+    /// find when each sentence happened.
+    static func splitIntoSentences(fullText: String, words: [BatchWord],
+                                   audioDurationSec: Double) -> [BatchSentence] {
+        let textSentences = sentencePieces(fullText)
+        guard !textSentences.isEmpty else { return [] }
+        guard !words.isEmpty else {
+            return proportionalSentences(textSentences, audioDurationSec: audioDurationSec)
+        }
+        return alignSentencesToWords(textSentences, words: words)
+    }
+
+    private static func sentencePieces(_ text: String) -> [String] {
+        let marker = "\u{0001}"
+        let split = text.replacingOccurrences(of: "([.!?])\\s+",
+                                              with: "$1\(marker)", options: .regularExpression)
+        return split.components(separatedBy: marker)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+    }
+
+    private static func alignSentencesToWords(_ sentences: [String],
+                                              words: [BatchWord]) -> [BatchSentence] {
+        var cursor = 0
+        var out: [BatchSentence] = []
+        for sentence in sentences {
+            let count = sentence.split { $0.isWhitespace }.count
+            let endIdx = min(cursor + count, words.count) - 1
+            guard endIdx >= cursor, endIdx >= 0 else { continue }
+            out.append(BatchSentence(text: sentence,
+                                     startSec: words[cursor].startSec,
+                                     endSec: words[endIdx].endSec))
+            cursor += count
+        }
+        return out
+    }
+
+    private static func proportionalSentences(_ sentences: [String],
+                                              audioDurationSec: Double) -> [BatchSentence] {
+        let totalChars = max(sentences.reduce(0) { $0 + $1.count }, 1)
+        var cursor = 0.0
+        return sentences.map { piece in
+            let share = Double(piece.count) / Double(totalChars) * audioDurationSec
+            let start = cursor
+            cursor += share
+            return BatchSentence(text: piece, startSec: start, endSec: cursor)
+        }
+    }
+
+    struct BatchWord { let text: String; let startSec: Double; let endSec: Double }
+    struct BatchSentence { let text: String; let startSec: Double; let endSec: Double }
+
+    private func runCapture(chunkSize: StreamingChunkSize) async throws {
+        let sampleRate: Double = 16_000
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                         sampleRate: sampleRate, channels: 1,
+                                         interleaved: false) else {
+            emit(["type": "error", "message": "failed to create capture audio format"])
+            throw ExitCode.failure
+        }
+
+        let wavWriter = try captureWav.map { try WavWriter(path: $0) }
+        if let wavWriter {
+            emit(["type": "recording", "path": wavWriter.path, "format": "wav_f32_16k_mono"])
+        }
+        defer { wavWriter?.close() }
+
+        emit([
+            "type": "start",
+            "mode": "capture",
+            "chunk_ms": chunkMs,
+            "source_sample_rate": sampleRate,
+            "source_channels": 1,
+            "mic": mic
+        ])
+
+        let manager = StreamingEouAsrManager(chunkSize: chunkSize)
+        try await loadAndWireCallbacks(manager: manager)
+        let diarizer = try await loadDiarizerIfEnabled()
+        Self.setDiarizer(diarizer)
+        defer { Self.setDiarizer(nil) }
+
+        let mixer = CaptureMixer()
+        Self.setMixer(mixer)
+        defer { Self.setMixer(nil) }
+
+        let systemRecorder = SystemAudioRecorder()
+        let micRecorder = mic ? MicRecorder() : nil
+
+        systemRecorder.onChunk = { samples in mixer.ingestSys(samples) }
+        micRecorder?.onChunk = { samples in mixer.ingestMic(samples) }
+
+        // If mic is disabled, treat the system stream as already-paired by feeding
+        // an equal number of zero samples into the mic side. Keeps the mixer's
+        // zipper invariant simple.
+        if !mic {
+            systemRecorder.onChunk = { samples in
+                mixer.ingestMic([Float](repeating: 0, count: samples.count))
+                mixer.ingestSys(samples)
+            }
+        }
+
+        try await systemRecorder.start()
+        try micRecorder?.start()
+
+        let runStart = Date()
+        var totalFrames = 0
+        var samplesSinceFlush = 0
+
+        let interrupted = Self.installInterruptHandler()
+        defer { Self.uninstallInterruptHandler() }
+
+        while !interrupted.pointee {
+            let mixed = mixer.pullMixed()
+            if mixed.isEmpty {
+                try? await Task.sleep(nanoseconds: 20_000_000) // 20ms
+                continue
+            }
+
+            wavWriter?.append(mixed)
+            let bufferData = mixed.withUnsafeBufferPointer { Data(buffer: $0) }
+            guard let buffer = Self.makePcmBuffer(format: format,
+                                                  frames: AVAudioFrameCount(mixed.count),
+                                                  data: bufferData) else {
+                continue
+            }
+            let diarSamples = diarizer == nil ? [] : mixed
+            try await manager.appendAudio(buffer)
+            try Self.feedDiarizer(diarizer, samples: diarSamples, sourceRate: sampleRate)
+            totalFrames += mixed.count
+            samplesSinceFlush += mixed.count
+            Self.setAudioSec(Double(totalFrames) / sampleRate)
+            try await manager.processBufferedAudio()
+            _ = try? diarizer?.process()
+            Self.drainPendingEous(force: false)
+
+            if await manager.eouDetected {
+                await manager.reset()
+                samplesSinceFlush = 0
+            } else if Double(samplesSinceFlush) / sampleRate >= maxUtteranceSec {
+                await manager.injectSilence(2.0)
+                try await manager.processBufferedAudio()
+                if await manager.eouDetected { await manager.reset() }
+                samplesSinceFlush = 0
+            }
+        }
+
+        await systemRecorder.stop()
+        micRecorder?.stop()
+
+        let finalText = try await manager.finish()
+        _ = try? diarizer?.finalizeSession()
+        Self.drainPendingEous(force: true)
+        let wall = Date().timeIntervalSince(runStart)
+        let audioDurationSec = Double(totalFrames) / sampleRate
+        let rtfx = audioDurationSec / max(wall, 0.0001)
+
+        emit([
+            "type": "final",
+            "text": finalText,
+            "audio_duration_sec": audioDurationSec,
+            "wall_sec": wall,
+            "rtfx": rtfx
+        ])
+
+        await manager.cleanup()
+        diarizer?.cleanup()
+    }
+
+    private func runStdin(chunkSize: StreamingChunkSize) async throws {
+        let sampleRate: Double
+        let commonFormat: AVAudioCommonFormat
+        let bytesPerFrame: Int
+        switch stdinFormat {
+        case "f32_16k_mono":
+            sampleRate = 16_000.0
+            commonFormat = .pcmFormatFloat32
+            bytesPerFrame = MemoryLayout<Float32>.size
+        case "s16_48k_mono":
+            sampleRate = 48_000.0
+            commonFormat = .pcmFormatInt16
+            bytesPerFrame = MemoryLayout<Int16>.size
+        default:
+            emit(["type": "error", "message": "invalid --stdin-format: \(stdinFormat)"])
+            throw ExitCode.validationFailure
+        }
+
+        guard let format = AVAudioFormat(
+            commonFormat: commonFormat,
+            sampleRate: sampleRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            emit(["type": "error", "message": "failed to create stdin audio format"])
+            throw ExitCode.failure
+        }
+
+        emit([
+            "type": "start",
+            "mode": "stdin",
+            "stdin_format": stdinFormat,
+            "chunk_ms": chunkMs,
+            "source_sample_rate": sampleRate,
+            "source_channels": 1
+        ])
+
+        let manager = StreamingEouAsrManager(chunkSize: chunkSize)
+        try await loadAndWireCallbacks(manager: manager)
+        let diarizer = try await loadDiarizerIfEnabled()
+        Self.setDiarizer(diarizer)
+        defer { Self.setDiarizer(nil) }
+
+        let sliceFrames = AVAudioFrameCount(Double(stdinSliceMs) / 1000.0 * sampleRate)
+        let sliceBytes = Int(sliceFrames) * bytesPerFrame
+
+        let stdinHandle = FileHandle.standardInput
+        var leftover = Data()
+        var totalFrames: Int = 0
+        var samplesSinceFlush = 0
+        let runStart = Date()
+
+        while true {
+            let chunk = stdinHandle.availableData
+            if chunk.isEmpty {
+                break
+            }
+            leftover.append(chunk)
+
+            while leftover.count >= sliceBytes {
+                let sliceData = leftover.prefix(sliceBytes)
+                leftover.removeFirst(sliceBytes)
+
+                guard let buffer = Self.makePcmBuffer(
+                    format: format, frames: sliceFrames, data: sliceData
+                ) else {
+                    emit(["type": "error", "message": "failed to allocate stdin buffer"])
+                    throw ExitCode.failure
+                }
+                let diarSamples = diarizer == nil ? [] : Self.floatsFromBuffer(buffer)
+                try await manager.appendAudio(buffer)
+                try Self.feedDiarizer(diarizer, samples: diarSamples, sourceRate: sampleRate)
+                totalFrames += Int(sliceFrames)
+                samplesSinceFlush += Int(sliceFrames)
+                Self.setAudioSec(Double(totalFrames) / sampleRate)
+                try await manager.processBufferedAudio()
+                _ = try? diarizer?.process()
+                if await manager.eouDetected {
+                    await manager.reset()
+                    samplesSinceFlush = 0
+                } else if Double(samplesSinceFlush) / sampleRate >= maxUtteranceSec {
+                    await manager.injectSilence(2.0)
+                    try await manager.processBufferedAudio()
+                    if await manager.eouDetected {
+                        await manager.reset()
+                    }
+                    samplesSinceFlush = 0
+                }
+            }
+        }
+
+        if leftover.count >= bytesPerFrame {
+            let tailFrames = AVAudioFrameCount(leftover.count / bytesPerFrame)
+            if let buffer = Self.makePcmBuffer(
+                format: format, frames: tailFrames, data: leftover
+            ) {
+                let diarSamples = diarizer == nil ? [] : Self.floatsFromBuffer(buffer)
+                try await manager.appendAudio(buffer)
+                try Self.feedDiarizer(diarizer, samples: diarSamples, sourceRate: sampleRate)
+                totalFrames += Int(tailFrames)
+                Self.setAudioSec(Double(totalFrames) / sampleRate)
+                try await manager.processBufferedAudio()
+                _ = try? diarizer?.process()
+                if await manager.eouDetected {
+                    await manager.reset()
+                }
+            }
+        }
+
+        let finalText = try await manager.finish()
+        _ = try? diarizer?.finalizeSession()
+        Self.drainPendingEous(force: true)
+        let wall = Date().timeIntervalSince(runStart)
+        let audioDurationSec = Double(totalFrames) / sampleRate
+        let rtfx = audioDurationSec / max(wall, 0.0001)
+
+        emit([
+            "type": "final",
+            "text": finalText,
+            "audio_duration_sec": audioDurationSec,
+            "wall_sec": wall,
+            "rtfx": rtfx
+        ])
+
+        await manager.cleanup()
+        diarizer?.cleanup()
+    }
+
+    private static func makePcmBuffer(
+        format: AVAudioFormat,
+        frames: AVAudioFrameCount,
+        data: Data
+    ) -> AVAudioPCMBuffer? {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
+            return nil
+        }
+        buffer.frameLength = frames
+        let frameCount = Int(frames)
+        if let channel = buffer.floatChannelData?[0] {
+            data.withUnsafeBytes { rawBuf in
+                let src = rawBuf.bindMemory(to: Float32.self)
+                for i in 0..<frameCount {
+                    channel[i] = src[i]
+                }
+            }
+        } else if let channel = buffer.int16ChannelData?[0] {
+            data.withUnsafeBytes { rawBuf in
+                let src = rawBuf.bindMemory(to: Int16.self)
+                for i in 0..<frameCount {
+                    channel[i] = src[i]
+                }
+            }
+        }
+        return buffer
+    }
+
+    private func loadAndWireCallbacks(manager: StreamingEouAsrManager) async throws {
+        let loadStart = Date()
+        try await manager.loadModels()
+        emit(["type": "models_loaded", "elapsed_sec": Date().timeIntervalSince(loadStart)])
+
+        if !quiet {
+            await manager.setPartialCallback { text in
+                Self.emitStatic([
+                    "type": "partial",
+                    "text": text,
+                    "wall_ms": Self.wallMs()
+                ])
+            }
+            await manager.setEouCallback { text in
+                let endSec = Self.readAudioSec()
+                let startSec = Self.consumeLastEouEnd(updatingTo: endSec)
+                Self.emitEouNow(text: text, startSec: startSec, endSec: endSec)
+            }
+        }
+    }
+
+    private func loadDiarizerIfEnabled() async throws -> SortformerDiarizer? {
+        guard diarize else { return nil }
+        let loadStart = Date()
+        let config = sortformerConfig(for: diarVariant)
+        let timelineConfig = DiarizerTimelineConfig.sortformerDefault
+        let diarizer = SortformerDiarizer(config: config, timelineConfig: timelineConfig)
+        do {
+            let models = try await SortformerModels.loadFromHuggingFace(config: config)
+            diarizer.initialize(models: models)
+            FileHandle.standardError.write(Data(
+                "diarizer_loaded \(diarVariant) elapsed_sec=\(Date().timeIntervalSince(loadStart))\n".utf8
+            ))
+            return diarizer
+        } catch {
+            FileHandle.standardError.write(Data(
+                "Sortformer load failed: \(error.localizedDescription); diarization disabled\n".utf8
+            ))
+            return nil
+        }
+    }
+
+    private func sortformerConfig(for variant: String) -> SortformerConfig {
+        switch variant {
+        case "fastV2": return .fastV2
+        case "fastV2_1": return .fastV2_1
+        case "balancedV2": return .balancedV2
+        case "balancedV2_1": return .balancedV2_1
+        case "highContextV2": return .highContextV2
+        case "highContextV2_1": return .highContextV2_1
+        default: return .highContextV2
+        }
+    }
+
+    private static func feedDiarizer(_ diarizer: SortformerDiarizer?, samples: [Float], sourceRate: Double) throws {
+        guard let diarizer = diarizer else { return }
+        try diarizer.addAudio(samples, sourceSampleRate: sourceRate)
+    }
+
+    private static func floatsFromBuffer(_ buffer: AVAudioPCMBuffer) -> [Float] {
+        let frames = Int(buffer.frameLength)
+        var samples = [Float](repeating: 0, count: frames)
+        if let ch = buffer.floatChannelData?[0] {
+            for i in 0..<frames { samples[i] = ch[i] }
+        } else if let ch = buffer.int16ChannelData?[0] {
+            for i in 0..<frames { samples[i] = Float(ch[i]) / 32768.0 }
+        }
+        return samples
+    }
+
+    private static func dominantSpeaker(diarizer: SortformerDiarizer, startSec: Double, endSec: Double) -> Int? {
+        let timeline = diarizer.timeline
+        let frameDur = Double(timeline.config.frameDurationSeconds)
+        var bestSpeaker: Int? = nil
+        var bestOverlap = 0.0
+        for (idx, speaker) in timeline.speakers {
+            var overlap = 0.0
+            for seg in speaker.finalizedSegments {
+                overlap += overlapSec(segStart: Double(seg.startFrame) * frameDur,
+                                      segEnd: Double(seg.endFrame) * frameDur,
+                                      startSec: startSec, endSec: endSec)
+            }
+            for seg in speaker.tentativeSegments {
+                overlap += overlapSec(segStart: Double(seg.startFrame) * frameDur,
+                                      segEnd: Double(seg.endFrame) * frameDur,
+                                      startSec: startSec, endSec: endSec)
+            }
+            if overlap > bestOverlap {
+                bestOverlap = overlap
+                bestSpeaker = idx
+            }
+        }
+        return bestSpeaker
+    }
+
+    private static func overlapSec(segStart: Double, segEnd: Double, startSec: Double, endSec: Double) -> Double {
+        let lo = max(segStart, startSec)
+        let hi = min(segEnd, endSec)
+        return hi > lo ? hi - lo : 0.0
+    }
+
+    // MARK: - Pending EOU queue
+
+    private struct PendingEou {
+        let text: String
+        let startSec: Double
+        let endSec: Double
+        let wallMs: Int
+    }
+
+    private static let pendingLock = NSLock()
+    nonisolated(unsafe) private static var pendingEous: [PendingEou] = []
+    nonisolated(unsafe) private static var lastEouEndSec: Double = 0.0
+    nonisolated(unsafe) private static var diarDebugEnabled: Bool = false
+    nonisolated(unsafe) private static var currentDiarizer: SortformerDiarizer?
+    nonisolated(unsafe) private static var currentMixer: CaptureMixer?
+    nonisolated(unsafe) private static var interruptInstalled = false
+
+    /// Bound on how long an EOU waits for Sortformer to catch up before emitting
+    /// without a speaker tag. Keeps live latency bounded if Sortformer can't track
+    /// realtime audio.
+    nonisolated(unsafe) private static var maxDiarWaitMs: Int = 3000
+
+    private static func consumeLastEouEnd(updatingTo endSec: Double) -> Double {
+        pendingLock.lock(); defer { pendingLock.unlock() }
+        let start = lastEouEndSec
+        lastEouEndSec = endSec
+        return start
+    }
+
+    private static func setDiarizer(_ diarizer: SortformerDiarizer?) {
+        pendingLock.lock(); defer { pendingLock.unlock() }
+        currentDiarizer = diarizer
+    }
+
+    private static func setMixer(_ mixer: CaptureMixer?) {
+        pendingLock.lock(); defer { pendingLock.unlock() }
+        currentMixer = mixer
+    }
+
+    private static func installInterruptHandler() -> UnsafeMutablePointer<Bool> {
+        earlScribeInterruptFlag.pointee = false
+        if !interruptInstalled {
+            signal(SIGINT) { _ in earlScribeInterruptFlag.pointee = true }
+            signal(SIGTERM) { _ in earlScribeInterruptFlag.pointee = true }
+            interruptInstalled = true
+        }
+        return earlScribeInterruptFlag
+    }
+
+    private static func uninstallInterruptHandler() {
+        earlScribeInterruptFlag.pointee = false
+    }
+
+    private static func emitEouNow(text: String, startSec: Double, endSec: Double) {
+        pendingLock.lock()
+        pendingEous.append(PendingEou(text: text, startSec: startSec, endSec: endSec, wallMs: wallMs()))
+        pendingLock.unlock()
+        drainPendingEous(force: false)
+    }
+
+    private static func drainPendingEous(force: Bool) {
+        pendingLock.lock()
+        let diarizer = currentDiarizer
+        var emitNow: [PendingEou] = []
+        var keep: [PendingEou] = []
+        let nowMs = wallMs()
+        var holding = false
+        for eou in pendingEous {
+            if holding {
+                keep.append(eou)
+                continue
+            }
+            if force || diarizer == nil {
+                emitNow.append(eou)
+                continue
+            }
+            let frameDur = Double(diarizer!.timeline.config.frameDurationSeconds)
+            let processedSec = Double(diarizer!.timeline.numFrames) * frameDur
+            let waited = nowMs - eou.wallMs
+            if eou.endSec <= processedSec + 0.25 || waited >= maxDiarWaitMs {
+                emitNow.append(eou)
+            } else {
+                keep.append(eou)
+                holding = true
+            }
+        }
+        pendingEous = keep
+        pendingLock.unlock()
+        for eou in emitNow {
+            emitOneEou(eou, diarizer: diarizer)
+        }
+    }
+
+    private static func emitOneEou(_ eou: PendingEou, diarizer: SortformerDiarizer?) {
+        var payload: [String: Any] = [
+            "type": "eou",
+            "text": eou.text,
+            "audio_sec": eou.endSec,
+            "start_sec": eou.startSec,
+            "wall_ms": eou.wallMs
+        ]
+        if let diarizer = diarizer {
+            let speaker = dominantSpeaker(diarizer: diarizer, startSec: eou.startSec, endSec: eou.endSec)
+            if let speaker = speaker { payload["speaker"] = speaker }
+            if diarDebugEnabled { logDiarDebug(diarizer: diarizer, eou: eou, speaker: speaker) }
+        }
+        pendingLock.lock()
+        let mixer = currentMixer
+        pendingLock.unlock()
+        if let mixer, let hint = mixer.channelHint(startSec: eou.startSec, endSec: eou.endSec) {
+            payload["channel_hint"] = hint
+        }
+        emitStatic(payload)
+    }
+
+    private static func logDiarDebug(diarizer: SortformerDiarizer, eou: PendingEou, speaker: Int?) {
+        let timeline = diarizer.timeline
+        var finalized = 0
+        var tentative = 0
+        for (_, sp) in timeline.speakers {
+            finalized += sp.finalizedSegments.count
+            tentative += sp.tentativeSegments.count
+        }
+        let line = "diar [\(String(format: "%.1f", eou.startSec))-\(String(format: "%.1f", eou.endSec))]" +
+                   " frames=\(timeline.numFrames) speakers=\(timeline.speakers.count)" +
+                   " finalSegs=\(finalized) tentSegs=\(tentative)" +
+                   " -> \(speaker.map(String.init) ?? "nil")\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+
+    // MARK: - JSONL emit
+
+    private static let wallStart = Date()
+    private static func wallMs() -> Int { Int(Date().timeIntervalSince(wallStart) * 1000) }
+
+    private static let audioSecLock = NSLock()
+    nonisolated(unsafe) private static var audioSecCursor: Double = 0
+    private static func setAudioSec(_ value: Double) {
+        audioSecLock.lock(); defer { audioSecLock.unlock() }
+        audioSecCursor = value
+    }
+    private static func readAudioSec() -> Double {
+        audioSecLock.lock(); defer { audioSecLock.unlock() }
+        return audioSecCursor
+    }
+
+    private static let stdoutLock = NSLock()
+    private static func emitStatic(_ payload: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else { return }
+        stdoutLock.lock()
+        defer { stdoutLock.unlock() }
+        print(line)
+        fflush(stdout)
+    }
+    private func emit(_ payload: [String: Any]) { Self.emitStatic(payload) }
+}

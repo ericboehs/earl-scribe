@@ -59,6 +59,43 @@ module EarlScribe
         assert_in_delta 0.75, identifier.threshold
       end
 
+      test "rejects match when top-2 are within margin" do
+        store = build_store_with(
+          "Allison" => [[1.0, 0.0]],
+          "Brooke" => [[0.99, 0.14]]
+        )
+        identifier = EarlScribe::Speaker::Identifier.new(store: store, margin: 0.05)
+        # Embedding similar to both — Allison wins narrowly
+        name, = identifier.identify([1.0, 0.0])
+        assert_nil name
+      end
+
+      test "accepts match when top-2 are beyond margin" do
+        store = build_store_with(
+          "Allison" => [[1.0, 0.0]],
+          "Brooke" => [[0.5, 0.86]]
+        )
+        identifier = EarlScribe::Speaker::Identifier.new(store: store, margin: 0.04)
+        name, = identifier.identify([1.0, 0.0])
+        assert_equal "Allison", name
+      end
+
+      test "custom margin is respected" do
+        identifier = EarlScribe::Speaker::Identifier.new(
+          store: EarlScribe::Speaker::Store.new(speakers_dir: @tmpdir),
+          margin: 0.10
+        )
+        assert_in_delta 0.10, identifier.margin
+      end
+
+      def build_store_with(speakers)
+        store = Object.new
+        store.define_singleton_method(:list) do
+          speakers.transform_values { |embs| { "embeddings" => embs } }
+        end
+        store
+      end
+
       private
 
       def setup_speakers

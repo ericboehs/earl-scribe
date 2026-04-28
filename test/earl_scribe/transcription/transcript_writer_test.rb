@@ -54,6 +54,15 @@ module EarlScribe
         end
       end
 
+      test "build_paths returns -live transcript and jsonl shadows" do
+        EarlScribe.stub(:data_dir, @tmp_dir) do
+          paths = TranscriptWriter.build_paths(record: false)
+          assert paths[:transcript_live].end_with?("-live.txt")
+          assert paths[:jsonl_live].end_with?("-live.jsonl")
+          assert paths[:wav].end_with?(".wav")
+        end
+      end
+
       test "write_line writes to file only" do
         path = File.join(@tmp_dir, "test.txt")
         writer = TranscriptWriter.new(path)

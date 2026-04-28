@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Verify llama-cli is installed and download the configured Qwen GGUF model.
+# Prints the resulting model path and the export line for EARL_SCRIBE_QWEN_MODEL.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+LLAMA_BIN="${EARL_SCRIBE_LLAMA_BIN:-llama-cli}"
+MODELS_DIR="${EARL_SCRIBE_MODELS_DIR:-$HOME/.config/earl-scribe/models}"
+
+# Default to Qwen 2.5 3B Instruct Q4_K_M — a small, fast, high-quality model.
+MODEL_REPO="${EARL_SCRIBE_QWEN_REPO:-Qwen/Qwen2.5-3B-Instruct-GGUF}"
+MODEL_FILE="${EARL_SCRIBE_QWEN_FILE:-qwen2.5-3b-instruct-q4_k_m.gguf}"
+MODEL_URL="https://huggingface.co/${MODEL_REPO}/resolve/main/${MODEL_FILE}"
+
+if ! command -v "$LLAMA_BIN" >/dev/null 2>&1; then
+  echo "error: $LLAMA_BIN not found on PATH." >&2
+  echo "Install llama.cpp (e.g. \`brew install llama.cpp\`) or set EARL_SCRIBE_LLAMA_BIN." >&2
+  exit 1
+fi
+
+mkdir -p "$MODELS_DIR"
+TARGET="$MODELS_DIR/$MODEL_FILE"
+
+if [ ! -f "$TARGET" ]; then
+  echo "==> Downloading $MODEL_FILE"
+  if command -v curl >/dev/null 2>&1; then
+    curl -L --fail --output "$TARGET.partial" "$MODEL_URL"
+    mv "$TARGET.partial" "$TARGET"
+  else
+    echo "error: curl is required to download the model." >&2
+    exit 1
+  fi
+else
+  echo "==> Already have $TARGET"
+fi
+
+echo
+echo "==> Done."
+echo "Model: $TARGET"
+echo
+echo "Export this to make earl-scribe find it:"
+echo "  export EARL_SCRIBE_QWEN_MODEL=\"$TARGET\""

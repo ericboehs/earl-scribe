@@ -83,6 +83,27 @@ module EarlScribe
         assert_nil segments[0].start_time
         assert_nil segments[0].end_time
       end
+
+      test "channel_hint mic labels segment as Me" do
+        words = [{ "word" => "hi", "speaker" => 0, "channel_hint" => "mic" }]
+        segments = EarlScribe::Transcription::WordGrouper.group(words)
+        assert_equal "Me", segments[0].speaker
+      end
+
+      test "EARL_SCRIBE_ME_NAME overrides Me label" do
+        words = [{ "word" => "hi", "speaker" => 0, "channel_hint" => "mic" }]
+        ENV["EARL_SCRIBE_ME_NAME"] = "Eric"
+        segments = EarlScribe::Transcription::WordGrouper.group(words)
+        assert_equal "Eric", segments[0].speaker
+      ensure
+        ENV.delete("EARL_SCRIBE_ME_NAME")
+      end
+
+      test "channel_hint system keeps Sortformer speaker label" do
+        words = [{ "word" => "hi", "speaker" => 1, "channel_hint" => "system" }]
+        segments = EarlScribe::Transcription::WordGrouper.group(words)
+        assert_equal "Speaker 1", segments[0].speaker
+      end
     end
   end
 end

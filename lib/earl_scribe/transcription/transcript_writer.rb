@@ -5,15 +5,18 @@ module EarlScribe
     # Tees transcript output to both stdout and a file, flushing after each line.
     class TranscriptWriter
       def self.build_paths(record:, meeting_title: nil)
-        timestamp = Time.now.strftime("%Y%m%d_%H%M%S")
         dir = EarlScribe.data_dir
+        base = base_for(meeting_title)
+        path = ->(suffix) { File.join(dir, "#{base}#{suffix}") }
+        { transcript: path.call(".txt"), jsonl: path.call(".jsonl"),
+          transcript_live: path.call("-live.txt"), jsonl_live: path.call("-live.jsonl"),
+          wav: path.call(".wav"), recording: record ? path.call(".m4a") : nil }
+      end
+
+      def self.base_for(meeting_title)
+        timestamp = Time.now.strftime("%Y%m%d_%H%M%S")
         slug = meeting_title && slugify(meeting_title)
-        base = slug ? "#{timestamp}-#{slug}" : "earl-scribe-#{timestamp}"
-        {
-          transcript: File.join(dir, "#{base}.txt"),
-          jsonl: File.join(dir, "#{base}.jsonl"),
-          recording: record ? File.join(dir, "#{base}.m4a") : nil
-        }
+        slug ? "#{timestamp}-#{slug}" : "earl-scribe-#{timestamp}"
       end
 
       def initialize(path)
