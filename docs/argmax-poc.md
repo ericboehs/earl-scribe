@@ -77,7 +77,47 @@ Worth integrating. Path forward:
 
 Out: keep Parakeet's `--batch` mode pinned to streaming until FluidAudio fixes #212.
 
+## Streaming spike (2026-04-28)
+
+Tested `whisperkit-cli transcribe --stream-simulated` on the 60s benchmark
+to evaluate replacing the live path:
+
+- **Wall time: 110s for 60s audio** — simulated streaming reprocesses all
+  audio-so-far on every 1-second tick, so total work ≈ Σ(1..N) seconds at
+  17.6× realtime. **Not real-time capable as-is.**
+- **Turbo model lacks alignment weights**: stream-simulated needs
+  word-level timings for its LocalAgreement algorithm and emits "No word
+  timings found" → empty transcript. Streaming would require full
+  large-v3 (1.6GB), defeating the turbo size advantage.
+
+So `--stream-simulated` is an algorithm-test harness, not a production
+streaming mode. It runs `whisperKit.transcribe(audioArray:)` on the
+cumulative buffer each tick.
+
+### What real streaming looks like in WhisperKit
+
+`AudioStreamTranscriber` (a Swift actor in WhisperKit core) is the proper
+streaming API:
+
+- `confirmedSegments` / `unconfirmedSegments` state via callback
+- Built-in VAD, default 2-segment agreement before confirmation
+- Pulls audio from any `AudioProcessing` conformer
+
+Integration plan if we go this route:
+
+1. Implement `StdinAudioProcessor` conforming to `AudioProcessing` that
+   reads raw Float32 16k mono PCM from stdin and exposes it via
+   `audioSamples` (rolling) + `startStreamingRecordingLive`.
+2. Construct `AudioStreamTranscriber` against it, callback emits JSONL on
+   every state delta.
+3. Replace FluidAudio `StreamingEouAsrManager` in our Swift shim with
+   this. Same I/O contract on the Ruby side; `LocalStream.rb` unchanged.
+
+Estimated effort: ~1 day. Our shim already owns subprocess lifecycle,
+JSON event protocol, and PCM stdin handling — only the engine swaps.
+
 ## Raw outputs
 
-- `/tmp/argmax-poc/eert-retro-60s.{json,srt}` — large-v3 full
-- `/tmp/argmax-poc-turbo/eert-retro-60s.{json,srt}` — turbo
+- `/tmp/argmax-poc/eert-retro-60s.{json,srt}` — large-v3 full + diar
+- `/tmp/argmax-poc-turbo/eert-retro-60s.{json,srt}` — turbo + diar
+- `/tmp/argmax-poc/stream60/` — turbo `--stream-simulated` (empty, no alignment weights)
