@@ -17,11 +17,11 @@ module EarlScribe
       DIARIZE_BIN = "whisperkit-cli"
 
       def run(paths, opts = {})
-        wav = paths[:wav]
-        return unless wav && File.exist?(wav) && File.exist?(paths[:jsonl])
+        audio = audio_source(paths)
+        return unless audio && File.exist?(paths[:jsonl])
 
         warn "\nRunning diarization on captured audio..."
-        rttm = run_diarize(wav, num_speakers: opts[:diar_num_speakers])
+        rttm = run_diarize(audio, num_speakers: opts[:diar_num_speakers])
         return unless rttm
 
         segments = parse_rttm(rttm)
@@ -30,6 +30,14 @@ module EarlScribe
         splice_jsonl(paths[:jsonl], segments)
         regenerate_txt(paths[:jsonl], paths[:transcript])
         FileUtils.rm_f(rttm) unless ENV["EARL_SCRIBE_KEEP_RTTM"]
+      end
+
+      def audio_source(paths)
+        wav = paths[:wav]
+        return wav if wav && File.exist?(wav)
+
+        recording = paths[:recording]
+        recording if recording && File.exist?(recording)
       end
 
       def run_diarize(wav, num_speakers: nil)
@@ -59,8 +67,12 @@ module EarlScribe
 
       def splice_jsonl(path, diar_segments)
         lines = File.readlines(path).filter_map { |l| safe_parse(l) }
-        updated = lines.map { |seg| seg.merge("speaker" => speaker_at(seg, diar_segments)) }
+        updated = lines.map { |seg| segment?(seg) ? seg.merge("speaker" => speaker_at(seg, diar_segments)) : seg }
         File.open(path, "w") { |f| updated.each { |seg| f.puts(JSON.generate(seg)) } }
+      end
+
+      def segment?(seg)
+        seg["type"] != "metadata" && seg.key?("start_time") && seg.key?("end_time")
       end
 
       def safe_parse(line)
@@ -97,7 +109,7 @@ module EarlScribe
         File.open(txt_path, "w") do |out|
           File.foreach(jsonl_path) do |line|
             seg = safe_parse(line)
-            out.puts(format_segment(seg)) if seg
+            out.puts(format_segment(seg)) if seg && segment?(seg)
           end
         end
       end

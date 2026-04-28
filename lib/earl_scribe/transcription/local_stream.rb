@@ -3,6 +3,7 @@
 require "open3"
 
 require_relative "local_stream_command"
+require_relative "local_stream_pipe"
 
 module EarlScribe
   module Transcription
@@ -49,13 +50,18 @@ module EarlScribe
 
       def connect(callback)
         cmd = build_command
-        @stdin, @stdout, @stderr, @wait_thr = Open3.popen3(*cmd)
-        [@stdin, @stdout, @stderr].each(&:binmode)
+        @shim_stdin, @stdout, @stderr, @wait_thr = Open3.popen3(*cmd)
+        [@shim_stdin, @stdout, @stderr].each(&:binmode)
+        @stdin = wrap_with_resample? ? LocalStreamPipe.open(@shim_stdin).tap { |p| @sox = p }.stdin : @shim_stdin
         @reader = Thread.new { read_loop(callback) }
         @stderr_drain = Thread.new { drain_stderr }
       rescue Errno::ENOENT, Errno::EACCES, Errno::ENOEXEC => error
         raise Error, "earl-scribe-asr binary at #{@asr_bin.inspect} #{spawn_error_reason(error)}. " \
                      "Rebuild via `bin/build-asr` and set EARL_SCRIBE_ASR_BIN."
+      end
+
+      def wrap_with_resample?
+        whisperkit? && sample_rate != 16_000
       end
 
       SPAWN_ERROR_REASONS = { Errno::ENOENT => "not found", Errno::EACCES => "is not executable",
@@ -72,7 +78,11 @@ module EarlScribe
       end
 
       def close
-        @stdin&.close
+        if @sox
+          LocalStreamPipe.close(@sox, @shim_stdin)
+        else
+          @stdin&.close
+        end
         warn_if_reader_hung(@reader && !@reader.join(CLOSE_READER_TIMEOUT))
         @stderr_drain&.join(CLOSE_STDERR_TIMEOUT)
         @stdout&.close
@@ -164,6 +174,7 @@ module EarlScribe
 
       def reset_handles
         @stdin = @stdout = @stderr = @wait_thr = @reader = @stderr_drain = nil
+        @shim_stdin = @sox = nil
       end
     end
   end
