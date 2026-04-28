@@ -30,7 +30,9 @@ final class WavWriter {
         samplesWritten &+= UInt32(samples.count)
     }
 
-    /// Patch RIFF + data chunk sizes and close the file.
+    /// Patch RIFF + data chunk sizes, fsync to disk, then close. The fsync
+    /// guarantees the rerun subprocess sees the complete file — without it the
+    /// patched header can race ahead of the audio bytes still in OS buffers.
     func close() {
         lock.lock(); defer { lock.unlock() }
         let dataBytes = samplesWritten * 4 // Float32
@@ -39,6 +41,7 @@ final class WavWriter {
         try? handle.write(contentsOf: u32le(riffSize))
         try? handle.seek(toOffset: 40)
         try? handle.write(contentsOf: u32le(dataBytes))
+        try? handle.synchronize()
         try? handle.close()
     }
 
