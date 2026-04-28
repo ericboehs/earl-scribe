@@ -105,6 +105,29 @@ module EarlScribe
         end
       end
 
+      test "wait_until_done is no-op when no subprocess started" do
+        client = LocalStream.new(asr_bin: "/tmp/asr")
+        client.wait_until_done # should not raise
+      end
+
+      test "send_audio is no-op when stdin nil" do
+        client = LocalStream.new(asr_bin: "/tmp/asr")
+        client.send_audio("data") # should not raise
+      end
+
+      test "close is no-op before connect" do
+        client = LocalStream.new(asr_bin: "/tmp/asr")
+        client.close # should not raise
+      end
+
+      test "channels accessor returns 1" do
+        assert_equal 1, LocalStream.new(asr_bin: "/tmp/asr").channels
+      end
+
+      test "native? true when native opts set" do
+        assert LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true }).native?
+      end
+
       test "wait_until_done joins the wait thread" do
         client = LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true })
         joined = false

@@ -182,6 +182,46 @@ module EarlScribe
         assert_equal "kept", WhisperkitDiarize.speaker_at(seg, [])
       end
 
+      test "run_diarize passes --num-speakers when provided" do
+        path = File.join(@dir, "x.rttm")
+        captured = []
+        Open3.stub(:capture3, lambda { |*args|
+          captured << args
+          File.write(args[args.index("--rttm-path") + 1], "SPEAKER x 1 0.0 1.0 <NA> <NA> A <NA> <NA>\n")
+          ["", "", fake_status(success: true)]
+        }) do
+          WhisperkitDiarize.run_diarize(@paths[:wav], num_speakers: 3)
+          FileUtils.rm_f(path)
+        end
+        assert_includes captured.first, "--num-speakers"
+        assert_includes captured.first, "3"
+      end
+
+      test "splice_jsonl preserves non-segment lines" do
+        File.write(@paths[:jsonl], <<~JSONL)
+          {"type":"metadata","note":"hi"}
+          {"speaker":"Speaker 0","text":"hello","start_time":0.0,"end_time":2.0}
+        JSONL
+        WhisperkitDiarize.splice_jsonl(@paths[:jsonl], [{ start: 0, end: 5, speaker: "Speaker A" }])
+        lines = File.readlines(@paths[:jsonl]).map { |l| JSON.parse(l) }
+        assert_equal "metadata", lines[0]["type"]
+        # metadata keeps no speaker field added since segment? returns false
+        refute_equal "Speaker A", lines[0]["speaker"]
+        assert_equal "Speaker A", lines[1]["speaker"]
+      end
+
+      test "regenerate_txt skips metadata lines" do
+        File.write(@paths[:jsonl], <<~JSONL)
+          {"type":"metadata","note":"hi"}
+          {"speaker":"X","text":"hello","start_time":0.0,"end_time":2.0}
+          not json
+        JSONL
+        WhisperkitDiarize.regenerate_txt(@paths[:jsonl], @paths[:transcript])
+        txt = File.read(@paths[:transcript])
+        assert_includes txt, "X: hello"
+        refute_match(/metadata/, txt)
+      end
+
       test "overlap_or_distance distinguishes overlap from gap before vs after" do
         diar = { start: 5, end: 10 }
         assert_in_delta(-3.0, WhisperkitDiarize.overlap_or_distance(diar, 0, 2), 1e-6) # before

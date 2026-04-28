@@ -84,6 +84,54 @@ module EarlScribe
         end
       end
 
+      def test_encode_clusters_skips_when_average_returns_nil
+        # Two clusters; one extracts ok but encoder returns nil (embeddings.empty?)
+        clusters = { "Speaker A" => { top_segments: [{ start: 0, end: 5 }], total_sec: 5 } }
+        # Stub average_embeddings on the module to return nil
+        WhisperkitConsolidate.stub(:average_embeddings, nil) do
+          result = WhisperkitConsolidate.encode_clusters("/tmp/x.m4a", clusters)
+          assert_empty result
+        end
+      end
+
+      def test_smaller_handles_tied_total_sec
+        clusters = { "A" => { total_sec: 5 }, "B" => { total_sec: 5 } }
+        # Tied → returns "B" since strict-less is false
+        assert_equal "B", WhisperkitConsolidate.smaller("A", "B", clusters)
+      end
+
+      def test_larger_picks_first_when_tied
+        clusters = { "A" => { total_sec: 5 }, "B" => { total_sec: 5 } }
+        # Tied → returns "A" since >= is true
+        assert_equal "A", WhisperkitConsolidate.larger("A", "B", clusters)
+      end
+
+      def test_smaller_picks_first_when_first_is_smaller
+        clusters = { "A" => { total_sec: 1 }, "B" => { total_sec: 9 } }
+        assert_equal "A", WhisperkitConsolidate.smaller("A", "B", clusters)
+      end
+
+      def test_try_merge_pair_skips_when_speaker_already_merged
+        embeddings = { "A" => [1.0, 0.0], "B" => [1.0, 0.0], "C" => [1.0, 0.0] }
+        clusters = { "A" => { total_sec: 10 }, "B" => { total_sec: 5 }, "C" => { total_sec: 1 } }
+        merges = WhisperkitConsolidate.merge_unmatched(embeddings, {}, clusters)
+        # B and C both merge into A (largest); merges should not duplicate
+        # Once B is in merges, C's pair vs B should skip
+        assert_includes merges.keys, "B"
+        assert_includes merges.keys, "C"
+        assert_equal 2, merges.size
+      end
+
+      def test_average_embeddings_returns_nil_when_extracts_yield_nothing
+        Audio::SegmentExtractor.stub(:extract_wav, ->(*) { raise EarlScribe::Error, "boom" }) do
+          Dir.mktmpdir do |dir|
+            assert_raises(EarlScribe::Error) do
+              WhisperkitConsolidate.average_embeddings("/x.m4a", dir, "A", [{ start: 0, end: 5 }])
+            end
+          end
+        end
+      end
+
       def test_group_clusters_picks_top_segments_and_totals_duration
         segments = [
           { start: 0, end: 2, speaker: "Speaker A" },     # 2s

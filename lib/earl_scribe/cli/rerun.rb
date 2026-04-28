@@ -42,26 +42,6 @@ module EarlScribe
         ok ? finalize(paths) : restore_live(paths)
       end
 
-      # ffmpeg-rewrite the captured WAV through a standard PCM container with
-      # a 1s leading silence pad. Without the pad, Parakeet TDT batch mode
-      # consistently drops the first ~20s of audio off the captured WAV — it
-      # appears to need a brief warm-up before tracking real content. The
-      # pad is trimmed from emitted timestamps via `--batch-pad-sec` so live
-      # and rerun timelines stay aligned.
-      def normalize_wav(wav)
-        return nil unless wav && File.exist?(wav)
-
-        normalized = "#{wav}.norm.wav"
-        _out, _err, status = Open3.capture3("ffmpeg", "-y", "-i", wav,
-                                            "-af", "adelay=1000|1000",
-                                            "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-                                            normalized)
-        return normalized if status.success?
-
-        FileUtils.rm_f(normalized)
-        nil
-      end
-
       def report_timing(start_time, wav)
         elapsed = Time.now - start_time
         duration = RerunAudio.wav_duration_sec(wav)
