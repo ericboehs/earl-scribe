@@ -12,3 +12,4 @@ earl-scribe-*.m4a
 **/.build/
 .swiftpm/
 /test/fixtures/benchmark/
+/macos/
