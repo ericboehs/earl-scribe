@@ -78,13 +78,21 @@ module EarlScribe
         assert_includes cmd, "--file"
       end
 
-      test "file_pass_command uses Config.rerun_chunk_ms not asr_chunk_ms" do
-        Config.stub(:rerun_chunk_ms, 320) do
-          Config.stub(:asr_chunk_ms, 1280) do
+      test "file_pass_command uses streaming chunk-ms when rerun_model is streaming" do
+        Config.stub(:rerun_model, "streaming") do
+          Config.stub(:rerun_chunk_ms, 320) do
             cmd = Rerun.file_pass_command("/tmp/x.wav", {})
             assert_includes cmd, "320"
-            assert_not_includes cmd, "1280"
+            assert_not_includes cmd, "--batch"
           end
+        end
+      end
+
+      test "file_pass_command uses --batch when rerun_model is batch" do
+        Config.stub(:rerun_model, "batch") do
+          cmd = Rerun.file_pass_command("/tmp/x.wav", {})
+          assert_includes cmd, "--batch"
+          assert_not_includes cmd, "--chunk-ms"
         end
       end
 

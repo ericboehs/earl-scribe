@@ -28,6 +28,9 @@ struct EarlScribeASR: AsyncParsableCommand {
     @Flag(name: .long, help: "Capture system audio (ScreenCaptureKit) + mic (AVAudioEngine) directly. No external audiotee/sox.")
     var capture: Bool = false
 
+    @Flag(name: .long, help: "Batch (non-streaming) mode: transcribe --file with Parakeet TDT 0.6B v2 (punctuation + casing). Slower first run; downloads ~600MB.")
+    var batch: Bool = false
+
     @Flag(name: .long, inversion: .prefixedNo, help: "Include mic in --capture mode (default true).")
     var mic: Bool = true
 
@@ -88,11 +91,17 @@ struct EarlScribeASR: AsyncParsableCommand {
             emit(["type": "error", "message": "pass exactly one of --file, --stdin, or --capture"])
             throw ExitCode.validationFailure
         }
+        if batch && (stdin || capture) {
+            emit(["type": "error", "message": "--batch requires --file"])
+            throw ExitCode.validationFailure
+        }
 
         if capture {
             try await runCapture(chunkSize: chunkSize)
         } else if stdin {
             try await runStdin(chunkSize: chunkSize)
+        } else if batch {
+            try await runBatch()
         } else {
             try await runFile(chunkSize: chunkSize)
         }
@@ -191,6 +200,129 @@ struct EarlScribeASR: AsyncParsableCommand {
         await manager.cleanup()
         diarizer?.cleanup()
     }
+
+    private func runBatch() async throws {
+        let path = file!
+        let fileURL = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            emit(["type": "error", "message": "file not found: \(fileURL.path)"])
+            throw ExitCode.failure
+        }
+
+        let audioFile = try AVAudioFile(forReading: fileURL)
+        let audioDurationSec = Double(audioFile.length) / audioFile.processingFormat.sampleRate
+        emit([
+            "type": "start", "mode": "batch", "file": fileURL.lastPathComponent,
+            "audio_duration_sec": audioDurationSec, "model": "parakeet-tdt-0.6b-v2"
+        ])
+
+        let runStart = Date()
+        let loadStart = Date()
+        let models = try await AsrModels.downloadAndLoad(version: .v2)
+        let asr = AsrManager(config: .default)
+        try await asr.loadModels(models)
+        emit(["type": "models_loaded", "elapsed_sec": Date().timeIntervalSince(loadStart)])
+
+        let diarizer = try await loadDiarizerIfEnabled()
+        defer { diarizer?.cleanup() }
+
+        if let diarizer { try await feedDiarizerWithFile(diarizer, audioURL: fileURL) }
+
+        var state = try TdtDecoderState()
+        let result = try await asr.transcribe(fileURL, decoderState: &state)
+        let words = Self.groupTokensIntoWords(result.tokenTimings ?? [])
+        let sentences = Self.splitIntoSentences(words: words, fullText: result.text)
+        emitSentences(sentences, diarizer: diarizer)
+
+        let wall = Date().timeIntervalSince(runStart)
+        let rtfx = audioDurationSec / max(wall, 0.0001)
+        emit([
+            "type": "final", "text": result.text, "audio_duration_sec": audioDurationSec,
+            "wall_sec": wall, "rtfx": rtfx
+        ])
+    }
+
+    private func emitSentences(_ sentences: [BatchSentence], diarizer: SortformerDiarizer?) {
+        for sentence in sentences {
+            var payload: [String: Any] = [
+                "type": "eou", "text": sentence.text,
+                "start_sec": sentence.startSec, "audio_sec": sentence.endSec,
+                "wall_ms": Self.wallMs()
+            ]
+            if let diarizer,
+               let speaker = Self.dominantSpeaker(diarizer: diarizer,
+                                                  startSec: sentence.startSec,
+                                                  endSec: sentence.endSec) {
+                payload["speaker"] = speaker
+            }
+            Self.emitStatic(payload)
+        }
+    }
+
+    /// Load the WAV once into a Float32 array so Sortformer can ingest it before
+    /// transcription kicks off — same parallel-pipeline pattern as the streaming
+    /// modes.
+    private func feedDiarizerWithFile(_ diarizer: SortformerDiarizer, audioURL: URL) async throws {
+        let audioFile = try AVAudioFile(forReading: audioURL)
+        let format = audioFile.processingFormat
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format,
+                                            frameCapacity: AVAudioFrameCount(audioFile.length)) else {
+            return
+        }
+        try audioFile.read(into: buffer)
+        let samples = Self.floatsFromBuffer(buffer)
+        try diarizer.addAudio(samples, sourceSampleRate: format.sampleRate)
+        _ = try? diarizer.process()
+        _ = try? diarizer.finalizeSession()
+    }
+
+    /// SentencePiece tokens prefixed with `▁` mark word boundaries. Group runs
+    /// of (non-▁) tokens into single words and carry over their timing.
+    static func groupTokensIntoWords(_ timings: [TokenTiming]) -> [BatchWord] {
+        var words: [BatchWord] = []
+        for t in timings {
+            let token = t.token
+            let starts = token.hasPrefix("\u{2581}")
+            if starts || words.isEmpty {
+                let text = starts ? String(token.dropFirst()) : token
+                words.append(BatchWord(text: text, startSec: t.startTime, endSec: t.endTime))
+            } else {
+                let last = words.removeLast()
+                words.append(BatchWord(text: last.text + token, startSec: last.startSec, endSec: t.endTime))
+            }
+        }
+        return words
+    }
+
+    /// Walk the punctuated transcript and split words into sentences at `. ! ?`
+    /// boundaries (or fall back to a single segment if no punctuation appears).
+    static func splitIntoSentences(words: [BatchWord], fullText: String) -> [BatchSentence] {
+        guard !words.isEmpty else { return [] }
+        var sentences: [BatchSentence] = []
+        var current: [BatchWord] = []
+        for word in words {
+            current.append(word)
+            if let last = word.text.last, ".!?".contains(last) {
+                sentences.append(makeSentence(current))
+                current = []
+            }
+        }
+        if !current.isEmpty { sentences.append(makeSentence(current)) }
+        // If we wound up with one giant chunk, prefer the model's full text.
+        if sentences.count == 1, let s = sentences.first, !fullText.isEmpty {
+            sentences = [BatchSentence(text: fullText, startSec: s.startSec, endSec: s.endSec)]
+        }
+        return sentences
+    }
+
+    private static func makeSentence(_ words: [BatchWord]) -> BatchSentence {
+        BatchSentence(text: words.map(\.text).joined(separator: " "),
+                      startSec: words.first?.startSec ?? 0,
+                      endSec: words.last?.endSec ?? 0)
+    }
+
+    struct BatchWord { let text: String; let startSec: Double; let endSec: Double }
+    struct BatchSentence { let text: String; let startSec: Double; let endSec: Double }
 
     private func runCapture(chunkSize: StreamingChunkSize) async throws {
         let sampleRate: Double = 16_000

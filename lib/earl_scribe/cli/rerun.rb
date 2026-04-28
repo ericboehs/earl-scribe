@@ -136,7 +136,9 @@ module EarlScribe
       end
 
       def file_pass_command(wav, opts)
-        cmd = [Config.asr_bin, "--file", wav, "--chunk-ms", Config.rerun_chunk_ms.to_s]
+        cmd = [Config.asr_bin, "--file", wav]
+        cmd << "--batch" if Config.rerun_model == "batch"
+        cmd += ["--chunk-ms", Config.rerun_chunk_ms.to_s] unless Config.rerun_model == "batch"
         cmd += ["--diar-variant", opts[:diar_variant]] if opts[:diar_variant]
         cmd += ["--diar-wait-ms", opts[:diar_wait_ms].to_s] if opts[:diar_wait_ms]
         cmd

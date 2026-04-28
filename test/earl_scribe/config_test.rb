@@ -48,6 +48,18 @@ module EarlScribe
       assert_equal 320, EarlScribe::Config.rerun_chunk_ms
     end
 
+    test "rerun_model defaults to batch" do
+      ENV.delete("EARL_SCRIBE_RERUN_MODEL")
+      assert_equal "batch", EarlScribe::Config.rerun_model
+    end
+
+    test "rerun_model can be overridden via env" do
+      ENV["EARL_SCRIBE_RERUN_MODEL"] = "streaming"
+      assert_equal "streaming", EarlScribe::Config.rerun_model
+    ensure
+      ENV.delete("EARL_SCRIBE_RERUN_MODEL")
+    end
+
     test "llama_bin has default" do
       ENV.delete("EARL_SCRIBE_LLAMA_BIN")
       assert_equal "llama-cli", EarlScribe::Config.llama_bin
