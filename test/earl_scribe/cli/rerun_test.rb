@@ -100,7 +100,7 @@ module EarlScribe
 
       test "wav_duration_sec parses RIFF header data size" do
         write_fake_wav(@paths[:wav], data_bytes: 16_000 * 2 * 2) # 2 seconds @ Int16
-        assert_in_delta 2.0, Rerun.wav_duration_sec(@paths[:wav]), 1e-6
+        assert_in_delta 2.0, RerunAudio.wav_duration_sec(@paths[:wav]), 1e-6
       end
 
       test "report_timing prints elapsed and rate when wav has duration" do

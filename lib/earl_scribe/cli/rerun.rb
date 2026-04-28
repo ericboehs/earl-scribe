@@ -4,6 +4,7 @@ require "fileutils"
 require "json"
 require "open3"
 
+require_relative "rerun_audio"
 require_relative "rerun_progress"
 
 module EarlScribe
@@ -32,23 +33,26 @@ module EarlScribe
 
       def execute_pass(paths, opts)
         wall = Time.now
-        wav = normalize_wav(paths[:wav]) || paths[:wav]
-        ok = run_file_pass(wav, paths, opts)
+        wav = RerunAudio.normalize_wav(paths[:wav]) || paths[:wav]
+        pad = wav == paths[:wav] ? 0.0 : RerunAudio::PAD_SEC
+        ok = run_file_pass(wav, paths, opts.merge(time_offset_sec: pad))
         FileUtils.rm_f(wav) if wav != paths[:wav]
         report_timing(wall, paths[:wav]) if ok
         ok ? finalize(paths) : restore_live(paths)
       end
 
-      # ffmpeg-rewrite the captured WAV through a standard PCM container before
-      # the rerun reads it. AVAudioFile occasionally drops leading audio when
-      # parsing our hand-rolled RIFF; rewriting through ffmpeg produces a
-      # fully-conformant file that batch-mode reads cleanly. Copies the audio
-      # samples (-c:a copy) so it's effectively just a header rewrite.
+      # ffmpeg-rewrite the captured WAV through a standard PCM container with
+      # a 1s leading silence pad. Without the pad, Parakeet TDT batch mode
+      # consistently drops the first ~20s of audio off the captured WAV — it
+      # appears to need a brief warm-up before tracking real content. The
+      # pad is trimmed from emitted timestamps via `--batch-pad-sec` so live
+      # and rerun timelines stay aligned.
       def normalize_wav(wav)
         return nil unless wav && File.exist?(wav)
 
         normalized = "#{wav}.norm.wav"
         _out, _err, status = Open3.capture3("ffmpeg", "-y", "-i", wav,
+                                            "-af", "adelay=1000|1000",
                                             "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
                                             normalized)
         return normalized if status.success?
@@ -59,20 +63,10 @@ module EarlScribe
 
       def report_timing(start_time, wav)
         elapsed = Time.now - start_time
-        duration = wav_duration_sec(wav)
+        duration = RerunAudio.wav_duration_sec(wav)
         rtfx = duration && elapsed.positive? ? duration / elapsed : nil
         rate = rtfx ? format(" (%<rate>.1fx real-time)", rate: rtfx) : ""
         warn format("rerun done in %<elapsed>.1fs%<rate>s", elapsed: elapsed, rate: rate)
-      end
-
-      # Read RIFF/data chunk sizes from the WAV header to compute audio length.
-      # The shim writes 16k mono Int16 (2 B/sample), so duration = data_bytes / (16k*2).
-      def wav_duration_sec(path)
-        bytes = File.read(path, 44)
-        return nil unless bytes && bytes.bytesize == 44
-
-        data_bytes = bytes[40, 4].unpack1("V")
-        data_bytes.to_f / (16_000 * 2)
       end
 
       def relocate_live(paths)
@@ -91,7 +85,7 @@ module EarlScribe
         stdin.close
         stderr_thread = Thread.new { stderr.read }
         spinner = batch_mode? ? RerunProgress.start_spinner : nil
-        stream_to_files(stdout, paths)
+        stream_to_files(stdout, paths, offset: -opts[:time_offset_sec].to_f)
         spinner&.kill
         RerunProgress.clear if spinner
         stderr_thread.join
@@ -102,16 +96,16 @@ module EarlScribe
         Config.rerun_model == "batch"
       end
 
-      def stream_to_files(stdout, paths)
+      def stream_to_files(stdout, paths, offset: 0.0)
         File.open(paths[:jsonl], "w") do |jf|
           File.open(paths[:transcript], "w") do |tf|
-            stream_events(stdout, jf, tf)
+            stream_events(stdout, jf, tf, offset: offset)
           end
         end
       end
 
-      def stream_events(stdout, jsonl_file, txt_file)
-        ctx = { duration: nil, last_paint: 0.0 }
+      def stream_events(stdout, jsonl_file, txt_file, offset: 0.0)
+        ctx = { duration: nil, last_paint: 0.0, offset: offset }
         stdout.each_line do |line|
           event = parse_event(line)
           next unless event
@@ -130,7 +124,7 @@ module EarlScribe
       end
 
       def handle_eou(event, ctx, jsonl_file, txt_file)
-        seg = event_to_segment(event)
+        seg = event_to_segment(event, offset: ctx[:offset])
         jsonl_file.puts(JSON.generate(seg))
         txt_file.puts(format_segment(seg))
         RerunProgress.paint(event["audio_sec"]&.to_f, ctx)
@@ -163,11 +157,12 @@ module EarlScribe
         nil
       end
 
-      def event_to_segment(event)
+      def event_to_segment(event, offset: 0.0)
         speaker_id = event["speaker"]
         speaker = speaker_id ? "Speaker #{speaker_id}" : "Speaker 0"
-        { "speaker" => speaker, "text" => event["text"].to_s, "start_time" => event["start_sec"].to_f,
-          "end_time" => event["audio_sec"].to_f, "channel" => 0 }
+        { "speaker" => speaker, "text" => event["text"].to_s,
+          "start_time" => [(event["start_sec"].to_f + offset), 0.0].max,
+          "end_time" => [(event["audio_sec"].to_f + offset), 0.0].max, "channel" => 0 }
       end
 
       def format_segment(seg)
@@ -177,15 +172,8 @@ module EarlScribe
       end
 
       def finalize(paths)
-        encode_m4a(paths[:wav], paths[:recording]) if paths[:recording]
+        RerunAudio.encode_m4a(paths[:wav], paths[:recording]) if paths[:recording]
         FileUtils.rm_f(paths[:wav])
-      end
-
-      def encode_m4a(wav, m4a)
-        _out, err, status = Open3.capture3("ffmpeg", "-y", "-i", wav, "-c:a", "aac", "-b:a", "96k", m4a)
-        return if status.success?
-
-        warn "ffmpeg encode failed: #{err.lines.last(2).join.strip}"
       end
     end
   end
