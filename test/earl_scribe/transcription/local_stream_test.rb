@@ -128,6 +128,13 @@ module EarlScribe
         assert LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true }).native?
       end
 
+      test "asr_bin defaults to Config.asr_bin in fluidaudio engine" do
+        Config.stub(:asr_bin, "/tmp/parakeet") do
+          client = LocalStream.new(engine: :fluidaudio)
+          assert_equal "/tmp/parakeet", client.build_command.first
+        end
+      end
+
       test "wait_until_done joins the wait thread" do
         client = LocalStream.new(asr_bin: "/tmp/asr", native: { mic: true })
         joined = false

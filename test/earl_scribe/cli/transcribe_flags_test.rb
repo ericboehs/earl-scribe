@@ -132,6 +132,38 @@ module EarlScribe
         assert_includes stderr, "unknown flag"
         assert_includes stderr, "--bogus"
       end
+
+      test "--mic-gain-db parses as float" do
+        opts = TranscribeFlags.parse(["--mic-gain-db", "8.5"])
+        assert_in_delta 8.5, opts[:mic_gain_db], 1e-6
+      end
+
+      test "--mic-gain-db falls back to Config when omitted" do
+        Config.stub(:mic_gain_db, 12.0) do
+          opts = TranscribeFlags.parse([])
+          assert_in_delta 12.0, opts[:mic_gain_db], 1e-6
+        end
+      end
+
+      test "--diar-wait-ms parses as int" do
+        opts = TranscribeFlags.parse(["--diar-wait-ms", "6000"])
+        assert_equal 6000, opts[:diar_wait_ms]
+      end
+
+      test "--diar-wait-ms is nil when omitted" do
+        opts = TranscribeFlags.parse([])
+        assert_nil opts[:diar_wait_ms]
+      end
+
+      test "--engine defaults to parakeet" do
+        opts = TranscribeFlags.parse([])
+        assert_equal :parakeet, opts[:engine]
+      end
+
+      test "--engine whisperkit selects engine symbol" do
+        opts = TranscribeFlags.parse(["--engine", "whisperkit"])
+        assert_equal :whisperkit, opts[:engine]
+      end
     end
   end
 end

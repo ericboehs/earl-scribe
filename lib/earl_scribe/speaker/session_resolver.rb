@@ -45,7 +45,7 @@ module EarlScribe
           cached = @cache[cache_key]
           return cached if cached.is_a?(String)
 
-          enqueue(cache_key, words, :identify, channel: channel) unless cached == :pending
+          enqueue(cache_key, words, channel: channel) unless cached == :pending
           nil
         end
       end
@@ -61,13 +61,13 @@ module EarlScribe
 
       private
 
-      def enqueue(cache_key, words, type, channel: nil)
+      def enqueue(cache_key, words, channel: nil)
         s = words.first&.dig("start")
         e = words.last&.dig("end")
         return unless s && e && e - s >= MIN_DURATION
 
-        @cache[cache_key] = :pending if type == :identify
-        @queue << { cache_key: cache_key, start_time: s, end_time: e, type: type, channel: channel }
+        @cache[cache_key] = :pending
+        @queue << { cache_key: cache_key, start_time: s, end_time: e, channel: channel }
       end
 
       def process_jobs(identifier, tmp_dir)
@@ -81,42 +81,30 @@ module EarlScribe
         cache_key = job[:cache_key]
         wav_path = @pcm_buffer.extract_wav(job[:start_time], job[:end_time],
                                            tmp_dir: tmp_dir, channel: job[:channel])
-        return clear_pending(cache_key, job[:type]) unless wav_path
+        return clear_pending(cache_key) unless wav_path
 
-        identify_from_wav(cache_key, wav_path, identifier, job[:type])
+        identify_from_wav(cache_key, wav_path, identifier)
       rescue StandardError => error
-        clear_pending(cache_key, job[:type])
+        clear_pending(cache_key)
         EarlScribe.logger.warn("Speaker identification failed for #{cache_key}: #{error.message}")
       end
 
-      def clear_pending(cache_key, job_type)
-        synchronize { @cache.delete(cache_key) } if job_type == :identify
+      def clear_pending(cache_key)
+        synchronize { @cache.delete(cache_key) }
       end
 
-      def identify_from_wav(cache_key, wav_path, identifier, job_type)
+      def identify_from_wav(cache_key, wav_path, identifier)
         name, _similarity = identifier.identify(@encoder.encode(wav_path))
-        if name
-          apply_result(cache_key, name, job_type)
-        else
-          clear_pending(cache_key, job_type)
-        end
+        name ? apply_result(cache_key, name) : clear_pending(cache_key)
       ensure
         FileUtils.rm_f(wav_path)
       end
 
-      def apply_result(cache_key, name, job_type)
+      def apply_result(cache_key, name)
         synchronize do
-          old = @cache[cache_key]
           @cache[cache_key] = name
-          old_label = resolve_old_label(cache_key, old, name, job_type)
-          @on_speaker_identified&.call(cache_key, old_label, name) if old_label
+          @on_speaker_identified&.call(cache_key, speaker_label(cache_key), name)
         end
-      end
-
-      def resolve_old_label(cache_key, old, name, job_type)
-        return speaker_label(cache_key) if job_type == :identify
-
-        old if old.is_a?(String) && old != name
       end
 
       def speaker_label(cache_key)

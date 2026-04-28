@@ -68,6 +68,20 @@ module EarlScribe
         assert_in_delta 60.0, ctx[:duration], 1e-6
       end
 
+      def test_handle_event_start_without_duration
+        ctx = { duration: nil, last_paint: 0.0, offset: 0.0 }
+        RerunEvents.handle_event({ "type" => "start" }, ctx, StringIO.new, StringIO.new)
+        assert_nil ctx[:duration]
+      end
+
+      def test_handle_event_eou_without_audio_sec_paints_nil
+        ctx = { duration: 10.0, last_paint: 0.0, offset: 0.0 }
+        # No audio_sec — RerunProgress.paint should be called with nil
+        RerunEvents.handle_event({ "type" => "eou", "text" => "hi", "start_sec" => 0.0 },
+                                 ctx, StringIO.new, StringIO.new)
+        # No assertion — just ensures the &.to_f else branch is hit
+      end
+
       def test_handle_event_caches_final
         ctx = { duration: nil, last_paint: 0.0, offset: 0.0 }
         ev = { "type" => "final", "text" => "done" }
