@@ -120,6 +120,8 @@ module EarlScribe
       end
 
       def speaker_label(cache_key)
+        return "Speaker 0" if cache_key.start_with?("wk-")
+
         (m = cache_key.match(SPEAKER_RE)) ? "#{m[1]}Speaker #{m[2]}" : cache_key
       end
     end
